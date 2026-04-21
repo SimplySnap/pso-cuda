@@ -23,4 +23,4 @@ typedef struct {
 
 // Main entry point — evaluator passed as parameter
 PSOResult pso_run(const PSOConfig* cfg, EvaluatorFn evaluator, int islands); //note islands is the number of independent swarms to run in parallel - defines our communication topology
-void      pso_result_free(PSOResult* result);
+void pso_result_free(PSOResult* result);
