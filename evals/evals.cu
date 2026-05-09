@@ -1,6 +1,6 @@
 #include "evals.cuh"
 /*Levy Function - 3 dim*/
-__global__ void levy_fn(float fitness, float x[], int n_dim) {
+__global__ void levy_fn(float fitness, const float x[], int n_dim) {
     /*
     Takes as input point (x[]) and fitness, writes to fitness for this given point,
     n_dim is number of dims
@@ -29,7 +29,7 @@ __global__ void levy_fn(float fitness, float x[], int n_dim) {
 }
 
 /*Rastrigin Function. NOT parallelized*/
-__global__ void rastrigin_fn(float fitness, float x[], int n_dim) {
+__global__ void rastrigin_fn(float fitness, const float x[], int n_dim) {
     /* 
     Rastrigin Function
     Takes as input point (x[]) fitness to write to, n_dim number of dims
@@ -42,7 +42,7 @@ __global__ void rastrigin_fn(float fitness, float x[], int n_dim) {
 }
 
 /*Schaffer F2 Function*/
-__global__ void schaffer_f2_fn(float fitness, float x[], int n_dim) {
+__global__ void schaffer_f2_fn(float fitness, const float x[], int n_dim) {
     /*
     Schaffer F2 function - 2 dim MUST BE
     takes as input (x[]), fitness to write to, n_dim number of dims
