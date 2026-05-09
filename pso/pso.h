@@ -6,7 +6,7 @@
 #include <limits.h>
 
 // Device-callable evaluator function pointer type
-typedef float (*EvaluatorFn)(float fitness, const double position[], int n_dim);
+typedef float (*EvaluatorFn)(const float* position, int n_dim);
 
 /*Structures: config, best soln, particle*/
 typedef struct {
@@ -18,16 +18,23 @@ typedef struct {
     float c2;            // social coefficient
     float bound_lo;      // lower bound (per dim, uniform for now)
     float bound_hi;      // upper bound
+    //now, for multi-island and multi-topology swarms:
+    int n_islands;       // number of islands (and thus gpu clusters)
+    char* topology;      // string topology
 } PSOConfig;
 
-typedef struct particle {
-    int n_dims;
-    double position[n_dims];
-    float *fitness;
-    float *velocity;
-    double *pbest_pos;
-    double *pbest_fit; 
-} particle;
+//SofA format - coalescing. Downside - no swarm particle 'object'
+typedef struct {
+    float* positions;   // [n_particles * n_dims]
+    float* velocities;  // [n_particles * n_dims]
+    float* pbest_pos;   // [n_particles * n_dims]
+    float* pbest;   // [n_particles] - overall best fitness of each particle
+    float* fitness;     // [n_particles]
+    //global best section
+    float gbest_val; //scalar best fitness seen across all particles
+    int gbest_idx; //global best index
+    float* gbest_pos; //[n_dims] - needed for less wasteful memory management
+} swarm;
 
 typedef struct {
     float* best_position;  // host pointer, length n_dims

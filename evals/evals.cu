@@ -1,6 +1,6 @@
 #include "evals.cuh"
 /*Levy Function - 3 dim*/
-__global__ void levy_fn(float fitness, const float x[], int n_dim) {
+__device__ float levy_fn(const double x[], int n_dim) {
     /*
     Takes as input point (x[]) and fitness, writes to fitness for this given point,
     n_dim is number of dims
@@ -9,27 +9,29 @@ __global__ void levy_fn(float fitness, const float x[], int n_dim) {
     */
     //error check
     if (n_dim < 3) {
-        std::throw_error("Not enough dimensions!");
+        printf("fn only defined for over 2 dimensions");
         return;
     }
-    float res = 0;
-    float y1 = 1 + (x[0] - 1) / 4;
-    float yn = 1 + (x[n_dim - 1] - 1) / 4;
+    //y1, yn outside loop
+    float y1 = 1.0f + (x[0] - 1.0f) / 4.0f;
+    float yn = 1.0f + (x[n_dim - 1] - 1.0f) / 4.0f;
 
-    res += powf(sinf(pi * y1), 2);
+    float res = powf(sinf(M_PI_F * y1), 2.0f);
 
-    for (int i = 0; i < n_dim - 1; i++){
-        float y = 1 + (x[i] - 1) / 4;
-        float yp = 1 + (x[i + 1] - 1) / 4;
-
-        res += powf(y - 1, 2) * (1 + 10 * powf(sinf(pi * yp), 2)) 
-                + powf(yn - 1, 2);
+    for (int i = 0; i < n_dim - 1; i++) {
+        float y  = 1.0f + (x[i]     - 1.0f) / 4.0f;
+        float yp = 1.0f + (x[i + 1] - 1.0f) / 4.0f;
+        res += powf(y - 1.0f, 2.0f) * (1.0f + 10.0f * powf(sinf(M_PI_F * yp), 2.0f));
     }
-    fitness = res;
+
+    // Terminal term added ONCE, outside the loop
+    res += powf(yn - 1.0f, 2.0f) * (1.0f + powf(sinf(2.0f * M_PI_F * yn), 2.0f));
+
+    return res;
 }
 
 /*Rastrigin Function. NOT parallelized*/
-__global__ void rastrigin_fn(float fitness, const float x[], int n_dim) {
+__device__ float rastrigin_fn(const double x[], int n_dim) {
     /* 
     Rastrigin Function
     Takes as input point (x[]) fitness to write to, n_dim number of dims
@@ -38,21 +40,24 @@ __global__ void rastrigin_fn(float fitness, const float x[], int n_dim) {
     for (int i = 0; i < n_dim; ++i) {
         res += ((x[i]*x[i])-10*cosf(2*pi*x[i]));
     }
-    fitness = res;
+    return res;
 }
 
 /*Schaffer F2 Function*/
-__global__ void schaffer_f2_fn(float fitness, const float x[], int n_dim) {
+__device__ float schaffer_f2_fn(const double x[], int n_dim) {
     /*
     Schaffer F2 function - 2 dim MUST BE
     takes as input (x[]), fitness to write to, n_dim number of dims
     */
-    if (n_dims != 2){
-        std::throw_error("Not 2 dimensions!");
+    if (n_dim != 2){
+        printf("fn only defined for 2 dimensions");
         return;
     }
     float res = 0.5;
-    float frac = (sinf(x[0]*x[0]-x[1]*x[1])**2 - 0.5)/(1+0.001*(x[0]*x[0]+x[1]*x[1]))**2;
-    fitness += frac;
+    float frac = (powf(sinf(x[0]*x[0] - x[1]*x[1]), 2.0f) - 0.5)/(1+0.001*(x[0]*x[0]+x[1]*x[1]));
+    float frac_sq = frac*frac;
+    res += frac_sq;
+    return res;
+
 }
 
