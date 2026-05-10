@@ -34,6 +34,13 @@ typedef struct {
     float gbest_val; //scalar best fitness seen across all particles
     int gbest_idx; //global best index
     float* gbest_pos; //[n_dims] - needed for less wasteful memory management
+
+    //Reduction workspace — strategy-agnostic blob
+    //(lets us call argmin() OR )
+    void*  reduce_tmp;       // device ptr, opaque to caller
+    size_t reduce_tmp_bytes; // size of above
+
+    ReduceResult* d_reduce_out; // device ptr, single ReduceResult
 } swarm;
 
 typedef struct {
