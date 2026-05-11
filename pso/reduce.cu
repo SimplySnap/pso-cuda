@@ -1,4 +1,4 @@
-// --- REDUCTION (move to pso/reduce.cuh + pso/reduce.cu) ----------------------
+// --- REDUCTION ----------------------
 //
 // TODO(M3): struct ReduceResult { float val; int idx; };  // referenced in pso.h
 //
@@ -21,3 +21,15 @@
 //           - D threads gather gbest_pos[d] = pbest_pos[d*N + d_in->idx].
 //           - Only update if d_in->val < current gbest_val (host-side check OK).
 //
+
+#include "pso.h"
+#include "reduce.cuh"
+void reduce_argmin_cub(const float* pbest, int N,
+                    void* tmp, size_t tmp_bytes,
+                    ReduceResult* d_out, cudaStream_t s);
+void reduce_argmin_custom(const float* pbest, int N,
+                    void* tmp, size_t tmp_bytes,
+                    ReduceResult* d_out, cudaStream_t s);
+__global__ void kernel_copy_gbest_pos(
+              const float* pbest_pos, float* gbest_pos,
+            const ReduceResult* d_in, int N, int D);  

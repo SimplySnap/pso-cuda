@@ -1,0 +1,17 @@
+# build output
+build/
+*.o
+*.d
+*.obj
+
+# binaries
+*.exe
+*.out
+pso_cuda
+
+# editor / OS
+.vscode/
+.idea/
+.DS_Store
+*.swp
+

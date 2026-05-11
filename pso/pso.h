@@ -6,9 +6,7 @@
 #include <limits.h>
 #include "kernels.cuh" 
 #include "reduce.cuh"
-
-// TODO(M3): include "reduce.cuh" once it exists — ReduceResult is used below
-// but currently undeclared, so this header will not compile as-is.
+#include <curand_kernel.h>
 
 // Device-callable evaluator function pointer type
 typedef float (*EvaluatorFn)(const float* position, int n_dim);
@@ -47,6 +45,7 @@ typedef struct {
 
     ReduceResult* d_reduce_out; // device ptr, single ReduceResult
 
+    float* d_gbest_history; // device ptr, [max_iters], filled one entry/iter for convergence figure in progress report.
     // TODO(M3): curandState* d_rng_states;
     //   Decide policy BEFORE swarm_alloc:
     //     (a) one state per particle    -> N states, serial D draws in update
@@ -54,9 +53,8 @@ typedef struct {
     //   (a) is lighter on memory (XORWOW state ~48B); (b) matches the
     //   warp-per-dim update kernel's thread layout 1:1. Recommend (b).
     //
-    // TODO(M3): float* d_gbest_history;  // [max_iters], filled one entry/iter.
-    //   Needed for the convergence figure in the progress report. Cheap to
-    //   allocate now; painful to retrofit after the main loop is written.
+    curandState* d_rng_states; // device ptr, one curandState per (particle,dim) or per particle depending on policy choice.
+
 } swarm;
 
 typedef struct {
