@@ -9,10 +9,8 @@ Parallel Implementation of Particle Swarm Optimization on CUDA
 pso/
 ├── pso.h          — PSOConfig, swarm, PSOResult, pso_run()
 ├── pso.cu         — swarm lifecycle + main loop (calls kernels & reducer)
-├── kernels.cuh    — __global__ kernel declarations (eval_pbest, update)
-├── kernels.cu     — kernel implementations
-├── reduce.cuh     — ReduceResult + both strategy signatures
-└── reduce.cu      — CUB implementation now; custom implementation later
+├── kernels.cuh    — __global__ kernel declarations (eval_pbest, update) + reduction
+├── kernels.cu     — kernel implementations (eval, pbest, updating, reduction)
 evals/
 ├── evals.cuh
 └── evals.cu
@@ -128,10 +126,6 @@ Objective functions are passed as **device function pointers** defined in `evalu
 ```c
 typedef float (*DeviceEvaluator)(const float* position, int dims);
 ```
-
-Built-in evaluators:
-- `sphere.cu` — `f(x) = sum(x_i^2)`
-- `rosenbrock.cu` — Banana function
 
 Custom evaluators must be parallelized at the per-dimension level to avoid wasting GPU cycles on scalar CPU-bound computation. Each evaluator is launched as a sub-kernel or inlined within `pso_kernel.cu`.
 
