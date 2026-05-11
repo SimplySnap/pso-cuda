@@ -1,9 +1,12 @@
 // include/pso/pso.h
 #pragma once
-#include <stddef.h> 
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <limits.h>
+
+// TODO(M3): include "reduce.cuh" once it exists — ReduceResult is used below
+// but currently undeclared, so this header will not compile as-is.
 
 // Device-callable evaluator function pointer type
 typedef float (*EvaluatorFn)(const float* position, int n_dim);
@@ -41,6 +44,17 @@ typedef struct {
     size_t reduce_tmp_bytes; // size of above
 
     ReduceResult* d_reduce_out; // device ptr, single ReduceResult
+
+    // TODO(M3): curandState* d_rng_states;
+    //   Decide policy BEFORE swarm_alloc:
+    //     (a) one state per particle    -> N states, serial D draws in update
+    //     (b) one state per (particle,dim) -> N*D states, parallel draws
+    //   (a) is lighter on memory (XORWOW state ~48B); (b) matches the
+    //   warp-per-dim update kernel's thread layout 1:1. Recommend (b).
+    //
+    // TODO(M3): float* d_gbest_history;  // [max_iters], filled one entry/iter.
+    //   Needed for the convergence figure in the progress report. Cheap to
+    //   allocate now; painful to retrofit after the main loop is written.
 } swarm;
 
 typedef struct {
@@ -51,3 +65,17 @@ typedef struct {
 // Main entry point — evaluator passed as parameter
 PSOResult pso_run(const PSOConfig* cfg, EvaluatorFn evaluator, int islands); //note islands is the number of independent swarms to run in parallel - defines our communication topology
 void pso_result_free(PSOResult* result);
+
+// =============================================================================
+// Milestone 3 — single-GPU TODOs (header surface)
+// =============================================================================
+// TODO(M3): swarm_alloc(swarm*, const PSOConfig*)
+//           cudaMalloc positions, velocities, pbest_pos, pbest, fitness,
+//           gbest_pos, d_reduce_out, reduce_tmp workspace, cuRAND states.
+// TODO(M3): swarm_free(swarm*) — paired cudaFree, null out pointers.
+// TODO(M3): swarm_init(swarm*, const PSOConfig*, unsigned long long seed)
+//           launch curand_init kernel; fill positions ~ U[bound_lo, bound_hi];
+//           velocities ~ U[-|hi-lo|, |hi-lo|] (or zero); seed pbest = +INF.
+// =============================================================================
+// Deferred to Milestone 4: n_islands / topology fields above stay unused.
+// =============================================================================
