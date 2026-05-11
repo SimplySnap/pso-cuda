@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 /*
 Kernel Declarations:
 ┌─────────────────────────────────────────────────────┐
@@ -23,6 +22,8 @@ Kernel Declarations:
 */
 
 #pragma once
+#include "pso.h"
+#include "reduce.cuh"
 #include <cuda_runtime.h>
 #include <curand_kernel.h>
 #include <cub/cub.cuh> //holds high performance primitives (reduction argmin needed)
@@ -88,9 +89,7 @@ __global__ void kernel_update(
     float bound_lo, float bound_hi,
     int N, int D);
 // --- KERNELS (move to pso/kernels.cuh + pso/kernels.cu) ----------------------
-=======
 // --- KERNELS ----------------------
->>>>>>> 55b96d2 (Makefile, gitignore, more scaffolding)
 //
 // TODO(M3): __global__ kernel_curand_init(curandState* states, ull seed, int n)
 //           One thread per RNG slot. Run once during swarm_init.
@@ -121,23 +120,3 @@ __global__ void kernel_update(
 //           - pos = clamp(pos + v, bound_lo, bound_hi)
 //           - gbest_pos[d] is broadcast — load via __ldg or stage in shared mem.
 //
-
-#include "pso.h"
-#include "reduce.cuh"
-#include <curand_kernel.h>
-
-__global__ void kernel_curand_init(curandState* states, unsigned long long seed, int n);
-__global__ void kernel_eval_and_pbest(
-              const float* positions,   // [D*N] SoA
-              float*       fitness,     // [N]
-              float*       pbest,       // [N]
-              float*       pbest_pos,   // [D*N]
-              EvaluatorFn  f,
-              int N, int D);
-__global__ void kernel_update(
-              float* positions, float* velocities,
-              const float* pbest_pos, const float* gbest_pos,
-              curandState* states,
-              float w, float c1, float c2,
-              float bound_lo, float bound_hi,
-              int N, int D);
