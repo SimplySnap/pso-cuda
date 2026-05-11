@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <limits.h>
+#include "reduce.cuh"
 
 // TODO(M3): include "reduce.cuh" once it exists — ReduceResult is used below
 // but currently undeclared, so this header will not compile as-is.
@@ -79,3 +80,7 @@ void pso_result_free(PSOResult* result);
 // =============================================================================
 // Deferred to Milestone 4: n_islands / topology fields above stay unused.
 // =============================================================================
+
+void swarm_alloc(swarm* s, const PSOConfig* cfg);
+void swarm_free(swarm* s);
+void swarm_init(swarm* s, const PSOConfig* cfg, unsigned long long seed);
