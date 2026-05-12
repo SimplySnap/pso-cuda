@@ -50,6 +50,9 @@ __global__ void kernel_curand_init(
     unsigned long long seed,
     int n);
 
+//define D_MAX constant for array staging in kernel below
+#define MAX_D 128;
+
 // Eval + pbest update — one thread per particle
 __global__ void kernel_eval_and_pbest(
     const float* __restrict__ positions,  // [N * D]
