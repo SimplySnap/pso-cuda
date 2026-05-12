@@ -4,9 +4,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <limits.h>
-#include "kernels.cuh" 
-#include "reduce.cuh"
+#include <cuda_runtime.h>
 #include <curand_kernel.h>
+#include "reduce.cuh"
 
 // Device-callable evaluator function pointer type
 typedef float (*EvaluatorFn)(const float* position, int n_dim);

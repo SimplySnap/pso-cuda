@@ -1,5 +1,13 @@
 #pragma once
-struct ReduceResult {float val; int idx;};  // referenced in pso.h
+
+#include <stddef.h>
+#include <cuda_runtime.h>
+
+typedef struct {
+    float val;
+    int   idx;
+} ReduceResult;
+
 void reduce_argmin_cub(const float* pbest, int N,
                     void* tmp, size_t tmp_bytes,
                     ReduceResult* d_out, cudaStream_t s);
