@@ -113,6 +113,11 @@ pso.cu
 #include <limits>
 
 cudaError_t swarm_alloc(swarm* s, const PSOConfig* cfg) {
+    /*
+    Allocated device memory needed for all tensors (positions, velocities, p/gbest etc)
+    Also initializes RNG and argmin scratch buffer
+    */
+
     s->reduce_tmp_bytes = 0;
     CUDA_CHECK(cudaMalloc(&s->positions, sizeof(float) * cfg->n_particles * cfg->n_dims));
     CUDA_CHECK(cudaMalloc(&s->velocities, sizeof(float) * cfg->n_particles * cfg->n_dims));
@@ -138,6 +143,7 @@ cudaError_t swarm_alloc(swarm* s, const PSOConfig* cfg) {
 }
 
 cudaError_t swarm_free(swarm* s) {
+    //Frees allocated device memory to stop memory leaks
     CUDA_CHECK(cudaFree(s->positions)); s->positions = nullptr;
     CUDA_CHECK(cudaFree(s->velocities)); s->velocities = nullptr;
     CUDA_CHECK(cudaFree(s->pbest_pos)); s->pbest_pos = nullptr; 
@@ -167,6 +173,7 @@ cudaError_t swarm_init(swarm* s, const PSOConfig* cfg) {
     // avoid per-kernel synchronization unless timing or debugging requires it.
     CUDA_CHECK(cudaDeviceSynchronize());
 
+    //Initialize gbests
     s->gbest_val = std::numeric_limits<float>::infinity();
     s->gbest_idx = -1;
     CUDA_CHECK(cudaMemcpy(s->d_gbest_val, &s->gbest_val,
@@ -198,6 +205,11 @@ __global__ void kernel_swarm_init(
     curandState* __restrict__ d_states,
     float bound_lo, float bound_hi,
     int n_particles, int n_dims) {
+    /*
+    Fills positions, velocities, offsets. One thread per particle/dim entry
+    */
+
+    //indices
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     int n_entries = n_particles * n_dims;
     if (idx >= n_entries) return;
@@ -232,7 +244,7 @@ __global__ void kernel_swarm_init(
 }
 
 PSOResult pso_run(const PSOConfig* cfg, EvaluatorFn evaluator, int islands, char* topology) {
-    (void)islands;
+    (void)islands; //for now - no exploration of topologies or MPI-based islands
     (void)topology;
 
     if (cfg == nullptr || evaluator == nullptr) {
@@ -249,23 +261,28 @@ PSOResult pso_run(const PSOConfig* cfg, EvaluatorFn evaluator, int islands, char
     int n_entries = cfg->n_particles * cfg->n_dims;
     dim3 entry_block(256);
     dim3 entry_grid((n_entries + entry_block.x - 1) / entry_block.x);
+    //main iteration loop
     for (int iter = 0; iter < cfg->max_iters; ++iter) {
+        //evaluate compare current position with pbest
         kernel_eval_and_pbest<<<particle_grid, particle_block>>>(
             s.positions, s.fitness, s.pbest, s.pbest_pos,
             evaluator, cfg->n_particles, cfg->n_dims);
         CUDA_CHECK(cudaGetLastError());
 
+        //reduce best results
         reduce_argmin_cub(
             s.pbest, cfg->n_particles,
             s.reduce_tmp, s.reduce_tmp_bytes,
             s.d_reduce_out, 0);
-
+        
+        //write to gbest if better
         kernel_commit_gbest<<<1, 1>>>(
             s.d_reduce_out, s.pbest_pos, s.gbest_pos,
             s.d_gbest_val, s.d_gbest_idx, s.d_gbest_history,
             iter, cfg->n_particles, cfg->n_dims);
         CUDA_CHECK(cudaGetLastError());
-
+        
+        //update positions and velocities
         kernel_update<<<entry_grid, entry_block>>>(
             s.positions, s.velocities, s.pbest_pos, s.gbest_pos,
             s.d_rng_states, cfg->w, cfg->c1, cfg->c2,
@@ -279,12 +296,13 @@ PSOResult pso_run(const PSOConfig* cfg, EvaluatorFn evaluator, int islands, char
         sizeof(float), cudaMemcpyDeviceToHost));
     CUDA_CHECK(cudaMemcpy(&s.gbest_idx, s.d_gbest_idx,
         sizeof(int), cudaMemcpyDeviceToHost));
-
+    
+    //view results
     PSOResult result{};
     result.best_position = static_cast<float*>(std::malloc(sizeof(float) * cfg->n_dims));
     if (result.best_position == nullptr) {
         std::fprintf(stderr, "Failed to allocate PSOResult.best_position.\n");
-        CUDA_CHECK(swarm_free(&s));
+        CUDA_CHECK(swarm_free(&s)); //best_position failed
         std::exit(EXIT_FAILURE);
     }
 
@@ -297,7 +315,7 @@ PSOResult pso_run(const PSOConfig* cfg, EvaluatorFn evaluator, int islands, char
             result.best_position[d] = 0.0f;
         }
     }
-
+    //port histories of gbest for analytics
     result.history_len = cfg->max_iters;
     result.gbest_history = static_cast<float*>(
         std::malloc(sizeof(float) * cfg->max_iters));
@@ -313,6 +331,7 @@ PSOResult pso_run(const PSOConfig* cfg, EvaluatorFn evaluator, int islands, char
 }
 
 void pso_result_free(PSOResult* result) {
+    //free results/history memory
     if (result == nullptr) return;
 
     std::free(result->best_position);

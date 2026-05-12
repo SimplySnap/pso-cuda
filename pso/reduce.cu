@@ -5,13 +5,6 @@
 //           - Wraps cub::DeviceReduce::ArgMin.
 //           - Use the two-call idiom in swarm_alloc to size tmp_bytes.
 //
-// TODO(M3): reduce_argmin_custom(...)
-//           - L1: warp shuffle butterfly carrying (fit, idx) pair via
-//                 __shfl_down_sync(0xFFFFFFFF, ...).
-//           - L2: warp leaders write to shared mem; one warp reduces across warps.
-//           - L3 (optional, large grids): staging array of block winners +
-//                 second kernel for final argmin (avoid atomicCAS contention).
-//
 // __global__ kernel_copy_gbest_pos(
 //               const float* pbest_pos, float* gbest_pos,
 //               const ReduceResult* d_in, int N, int D)
@@ -28,21 +21,27 @@
 void reduce_argmin_cub(const float* pbest, int N,
                     void* tmp, size_t tmp_bytes,
                     ReduceResult* d_out, cudaStream_t s) {
-  (void)pbest;
-  (void)N;
-  (void)tmp;
-  (void)tmp_bytes;
-
+  /*
+  Uses cub library to find the ArgMin of pbest - passed in to comparison function to update
+  gbest
+  */
+  // ReduceResult must be { int idx; float val; } to match KeyValuePair<int,float>
+    static_assert(sizeof(ReduceResult) == sizeof(cub::KeyValuePair<int,float>),
+                  "ReduceResult layout mismatch with KeyValuePair<int,float>");                    
   CUDA_CHECK(cub::DeviceReduce::ArgMin(
-      tmp, tmp_bytes,
-      pbest,
-      reinterpret_cast<cub::KeyValuePair<int,float>*>(d_out),
-      N, s));
+    tmp, tmp_bytes,
+    pbest,
+    reinterpret_cast<cub::KeyValuePair<int,float>*>(d_out),
+    N, s));
 }
 
 __global__ void kernel_copy_gbest_pos(
               const float* pbest_pos, float* gbest_pos,
             const ReduceResult* d_in, int N, int D) {
+  /*
+  Copy pbest position of 'winning' particle into gbest.
+  Check if 'winning' handled externally
+  */
   int d = blockIdx.x * blockDim.x + threadIdx.x;
   if (d >= D) return;
 
@@ -52,6 +51,10 @@ __global__ void kernel_copy_gbest_pos(
 }
 
 size_t reduce_argmin_cub_workspace(int N) {
+  /*
+  Helper function gives us number of bytes needed for argmin_cub temp buffer
+  Makes use of cub ArgMin properties: when nullptr passed in, returns number of bytes needed
+  */
   size_t bytes = 0;
   cub::DeviceReduce::ArgMin(nullptr, bytes,
       (float*)nullptr,
