@@ -88,7 +88,6 @@ __global__ void kernel_update(
     float w, float c1, float c2,
     float bound_lo, float bound_hi,
     int N, int D);
-// --- KERNELS (move to pso/kernels.cuh + pso/kernels.cu) ----------------------
 // --- KERNELS ----------------------
 //
 // TODO(M3): __global__ kernel_curand_init(curandState* states, ull seed, int n)

@@ -106,3 +106,80 @@ pso.cu
 // TODO(M3): pso_result_free()
 //           - free(result->best_position); zero the struct.
 //
+
+#include "pso.h"
+#include "reduce.cuh"
+#include "kernels.cuh"
+#include "cuda_check.cuh"
+#include <math_constants.h>
+
+cudaError_t swarm_alloc(swarm* s, const PSOConfig* cfg) {
+    CUDA_CHECK(cudaMalloc(&s->positions, sizeof(float) * cfg->n_particles * cfg->n_dims));
+    CUDA_CHECK(cudaMalloc(&s->velocities, sizeof(float) * cfg->n_particles * cfg->n_dims));
+    CUDA_CHECK(cudaMalloc(&s->pbest_pos, sizeof(float) * cfg->n_particles * cfg->n_dims));
+    CUDA_CHECK(cudaMalloc(&s->pbest, sizeof(float) * cfg->n_particles));
+    CUDA_CHECK(cudaMalloc(&s->fitness, sizeof(float) * cfg->n_particles));
+    CUDA_CHECK(cudaMalloc(&s->gbest_pos, sizeof(float) * cfg->n_dims));
+    CUDA_CHECK(cudaMalloc(&s->d_reduce_out, sizeof(ReduceResult)));
+    CUDA_CHECK(cudaMalloc(&s->d_gbest_history, sizeof(float) * cfg->max_iters));
+    //   Option 1- One state per thread in kernel_update (most flexible, max memory). 
+    //   Let's go with Option 2:  One state per particle, with serial draws in update (less memory, less parallelism).
+    //   This can be adjusted later if memory usage is a concern.
+    int n_rng_states = cfg->n_particles * cfg->n_dims; // or cfg->n_particles if using one state per particle
+    CUDA_CHECK(cudaMalloc(&s->d_rng_states, sizeof(curandState) * n_rng_states));
+
+    // CUB reduction needs some temp storage for intermediate results. Query the size and allocate it here so we can reuse it across iterations.
+    s->reduce_tmp_bytes = reduce_argmin_cub_workspace(cfg->n_particles);
+    CUDA_CHECK(cudaMalloc(&s->reduce_tmp, s->reduce_tmp_bytes));
+
+    return cudaSuccess;
+}
+
+cudaError_t swarm_free(swarm* s) {
+    CUDA_CHECK(cudaFree(s->positions)); s->positions = nullptr;
+    CUDA_CHECK(cudaFree(s->velocities)); s->velocities = nullptr;
+    CUDA_CHECK(cudaFree(s->pbest_pos)); s->pbest_pos = nullptr; 
+    CUDA_CHECK(cudaFree(s->pbest)); s->pbest = nullptr;
+    CUDA_CHECK(cudaFree(s->fitness)); s->fitness = nullptr;
+    CUDA_CHECK(cudaFree(s->gbest_pos)); s->gbest_pos = nullptr;
+    CUDA_CHECK(cudaFree(s->d_reduce_out)); s->d_reduce_out = nullptr;
+    CUDA_CHECK(cudaFree(s->d_gbest_history)); s->d_gbest_history = nullptr;
+    CUDA_CHECK(cudaFree(s->d_rng_states)); s->d_rng_states = nullptr;
+    CUDA_CHECK(cudaFree(s->reduce_tmp)); s->reduce_tmp = nullptr;
+    return cudaSuccess;
+}
+
+cudaError_t swarm_init(swarm* s, const PSOConfig* cfg, unsigned long long seed) {
+    // IMPORTANT: Ensure the first
+    //            eval_and_pbest pass uses `<` against pbest=+INF (always true) and
+    //            unconditionally copies positions->pbest_pos on that first hit.
+    int n_rng_states = cfg->n_particles * cfg->n_dims; // or cfg->n_particles if using one state per particle
+    dim3 block_rng(256);
+    dim3 grid_rng((n_rng_states + block_rng.x - 1) / block_rng.x);
+    kernel_curand_init<<<grid_rng, block_rng>>>(s->d_rng_states, seed, n_rng_states);
+    CUDA_CHECK(cudaGetLastError());
+    s->gbest_val = +CUDART_INF_F, s->gbest_idx = -1.f;
+    dim3 block_init(256);
+    dim3 grid_init((cfg->n_particles + block_init.x - 1) / block_init.x);
+    kernel_swarm_init<<<grid_init, block_init>>>(s->positions, s->velocities, s->pbest_pos, s->pbest, s->d_rng_states, cfg->n_particles, cfg->n_dims);
+    CUDA_CHECK(cudaGetLastError());
+    return cudaSuccess;
+}
+
+__global__ void kernel_swarm_init(float* positions, float* velocities, float* pbest_pos, float* pbest, curandState* d_states, int n_particles, int n_dims) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n_particles) {
+        // Initialize positions, velocities, and pbest values here using d_states for random numbers.
+        curandState local_state = d_states[idx]; // or d_states[idx * n_dims + dim] if using one state per (particle,dim)
+        for (int d = 0; d < n_dims; d++) {
+            // Random initialization assuming bounds are -1 to 1 for simplicity; adjust as needed:
+            float rand_pos = curand_uniform(&local_state) * 2.0f - 1.0f; // random float in [-1, 1]
+            float rand_vel = curand_uniform(&local_state) * 0.1f - 0.05f; // random float in [-0.05, 0.05]
+            positions[idx * n_dims + d] = rand_pos;
+            velocities[idx * n_dims + d] = rand_vel;
+            pbest_pos[idx * n_dims + d] = rand_pos; // Initial pbest position same as initial position
+        }
+        pbest[idx] = +CUDART_INF_F; // Initial pbest fitness is +INF
+        d_states[idx] = local_state; // Save back state if needed
+    }
+}
