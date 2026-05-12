@@ -23,7 +23,11 @@ void reduce_argmin_cub(const float* pbest, int N,
                     ReduceResult* d_out, cudaStream_t s) {
   /*
   Uses cub library to find the ArgMin of pbest - passed in to comparison function to update
-  gbest
+  gbest.
+  Runs reduction on each iteration. Takes fitness[N] arr, calls argmin with pre-alloc tmp buff.
+  Then, passes result to KeyValuePair<int,float> (index, fitness value) and converts to
+  'ReduceResult' data type.
+  stream input s - lets us overlap reduction with other independent work
   */
   // ReduceResult must be { int idx; float val; } to match KeyValuePair<int,float>
     static_assert(sizeof(ReduceResult) == sizeof(cub::KeyValuePair<int,float>),
@@ -40,7 +44,7 @@ __global__ void kernel_copy_gbest_pos(
             const ReduceResult* d_in, int N, int D) {
   /*
   Copy pbest position of 'winning' particle into gbest.
-  Check if 'winning' handled externally
+  Check if 'winning' handled externally. d_in gives us location of winning particle
   */
   int d = blockIdx.x * blockDim.x + threadIdx.x;
   if (d >= D) return;
