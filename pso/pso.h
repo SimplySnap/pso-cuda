@@ -27,6 +27,7 @@ typedef struct {
     //now, for multi-island and multi-topology swarms:
     int n_islands;       // number of islands (and thus gpu clusters)
     char* topology;      // string topology
+    unsigned long long seed; // RNG seed for reproducibility (optional, can be zero)
 } PSOConfig;
 
 //SofA format - coalescing. Downside - no swarm particle 'object'
@@ -65,6 +66,8 @@ typedef struct {
 typedef struct {
     float* best_position;  // host pointer, length n_dims
     float  best_value;
+    float* gbest_history;  // host pointer, length history_len (nullable)
+    int    history_len;
 } PSOResult;
 
 // Main entry point — evaluator passed as parameter
