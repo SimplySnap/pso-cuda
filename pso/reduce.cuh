@@ -9,3 +9,4 @@ void reduce_argmin_custom(const float* pbest, int N,
 __global__ void kernel_copy_gbest_pos(
               const float* pbest_pos, float* gbest_pos,
             const ReduceResult* d_in, int N, int D);    
+size_t reduce_argmin_cub_workspace(int N);

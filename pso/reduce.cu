@@ -1,7 +1,4 @@
 // --- REDUCTION ----------------------
-//
-// TODO(M3): struct ReduceResult { float val; int idx; };  // referenced in pso.h
-//
 // TODO(M3): reduce_argmin_cub(const float* pbest, int N,
 //                             void* tmp, size_t tmp_bytes,
 //                             ReduceResult* d_out, cudaStream_t s)
@@ -33,3 +30,10 @@ void reduce_argmin_custom(const float* pbest, int N,
 __global__ void kernel_copy_gbest_pos(
               const float* pbest_pos, float* gbest_pos,
             const ReduceResult* d_in, int N, int D);  
+
+size_t reduce_argmin_cub_workspace(int N) {
+  size_t bytes = 0;
+  cub::DeviceReduce::ArgMin(nullptr, bytes,
+    (float*)nullptr, (cub::KeyValuePair<int,float>*)nullptr, N);
+  return bytes;
+} 

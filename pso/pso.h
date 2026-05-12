@@ -82,6 +82,6 @@ void pso_result_free(PSOResult* result);
 // Deferred to Milestone 4: n_islands / topology fields above stay unused.
 // =============================================================================
 
-void swarm_alloc(swarm* s, const PSOConfig* cfg);
-void swarm_free(swarm* s);
-void swarm_init(swarm* s, const PSOConfig* cfg, unsigned long long seed);
+cudaError_t swarm_alloc(swarm* s, const PSOConfig* cfg);
+cudaError_t swarm_free(swarm* s);
+cudaError_t swarm_init(swarm* s, const PSOConfig* cfg, unsigned long long seed);
