@@ -190,11 +190,13 @@ __global__ void kernel_commit_gbest(
     int   iter,
     int N, int D) {
         if (blockIdx.x != 0 || threadIdx.x != 0) return;
-        if (d_reduce_out->val < *d_gbest_val) {
-            *d_gbest_val = d_reduce_out->val;
-            *d_gbest_idx = d_reduce_out->idx;
+        int best_idx = d_reduce_out->idx;
+        float best_val = d_reduce_out->val;
+        if (best_idx >= 0 && best_idx < N && best_val < *d_gbest_val) {
+            *d_gbest_val = best_val;
+            *d_gbest_idx = best_idx;
             for (int d = 0; d < D; ++d) {
-                gbest_pos[d] = pbest_pos[d*N + d_reduce_out->idx];
+                gbest_pos[d] = pbest_pos[d*N + best_idx];
             }
         }
         d_gbest_history[iter] = *d_gbest_val;
