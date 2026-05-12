@@ -31,6 +31,7 @@
 namespace {
 
 constexpr float kPi = 3.14159265358979323846f;
+using Clock = std::chrono::steady_clock;
 
 enum class EvaluatorKind {
     Rastrigin,
@@ -51,6 +52,20 @@ struct Config {
     float bound_lo = -5.12f;
     float bound_hi = 5.12f;
 };
+
+struct Timings {
+    double eval_ms = 0.0;
+    double reduce_ms = 0.0;
+    double update_ms = 0.0;
+
+    double total_ms() const {
+        return eval_ms + reduce_ms + update_ms;
+    }
+};
+
+double elapsed_ms(Clock::time_point start, Clock::time_point end) {
+    return std::chrono::duration<double, std::milli>(end - start).count();
+}
 
 int parse_positive_int(const char* text, const char* name) {
     int value = 0;
@@ -216,8 +231,6 @@ int main(int argc, char** argv) {
     std::uniform_real_distribution<float> init_vel(-span, span);
     std::uniform_real_distribution<float> unit(0.0f, 1.0f);
 
-    auto t0 = std::chrono::steady_clock::now();
-
     // Mirrors swarm_init/kernel_swarm_init: initialize positions, velocities,
     // and pbest_pos in SoA order with offset = dim * N + particle.
     for (int idx = 0; idx < n_entries; ++idx) {
@@ -229,8 +242,10 @@ int main(int argc, char** argv) {
 
     float gbest_val = std::numeric_limits<float>::infinity();
     int gbest_idx = -1;
+    Timings timings;
 
     for (int iter = 0; iter < cfg.max_iters; ++iter) {
+        auto eval_start = Clock::now();
         // Mirrors kernel_eval_and_pbest: one logical worker per particle
         // calls the selected evaluator and updates pbest/pbest_pos when improved.
         for (int p = 0; p < N; ++p) {
@@ -244,7 +259,9 @@ int main(int argc, char** argv) {
                 }
             }
         }
+        timings.eval_ms += elapsed_ms(eval_start, Clock::now());
 
+        auto reduce_start = Clock::now();
         // Mirrors reduce_argmin_cub over pbest plus kernel_commit_gbest.
         // On GPU, the reducer finds the best pbest index, then the commit
         // kernel copies that particle's pbest_pos into gbest_pos.
@@ -260,7 +277,9 @@ int main(int argc, char** argv) {
 
         // Mirrors kernel_commit_gbest writing s.d_gbest_history[iter].
         gbest_history[iter] = gbest_val;
+        timings.reduce_ms += elapsed_ms(reduce_start, Clock::now());
 
+        auto update_start = Clock::now();
         if (gbest_idx >= 0) {
             // Mirrors kernel_update: one logical worker per (dimension, particle)
             // updates velocity and position using the committed global best.
@@ -290,24 +309,25 @@ int main(int argc, char** argv) {
                 velocities[idx] = new_vel;
             }
         }
+        timings.update_ms += elapsed_ms(update_start, Clock::now());
     }
-
-    auto t1 = std::chrono::steady_clock::now();
-    double total_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
-    float best_position0 = (gbest_idx >= 0 && D > 0) ? gbest_pos[0] : 0.0f;
 
     // Mirrors the final PSOResult fields produced by pso_run after copying
     // d_gbest_val and gbest_pos back to host.
-    std::cout << "impl,evaluator,N,D,iters,seed,total_ms,best_value,best_position0\n";
+    std::cout << "impl,evaluator,N,D,iters,seed,eval_ms,reduce_ms,update_ms,total_ms,"
+                 "final_gbest,achieved_bw_gbps,achieved_gflops\n";
     std::cout << "cpu,"
               << evaluator_name(cfg.evaluator) << ","
               << N << ","
               << D << ","
               << cfg.max_iters << ","
               << cfg.seed << ","
-              << total_ms << ","
+              << timings.eval_ms << ","
+              << timings.reduce_ms << ","
+              << timings.update_ms << ","
+              << timings.total_ms() << ","
               << gbest_val << ","
-              << best_position0 << "\n";
+              << "NA,NA\n";
 
     return EXIT_SUCCESS;
 }
