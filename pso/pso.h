@@ -66,6 +66,10 @@ typedef struct {
 typedef struct {
     float* best_position;  // host pointer, length n_dims
     float  best_value;
+    float  eval_ms;
+    float  reduce_ms;
+    float  update_ms;
+    float  total_ms;
     float* gbest_history;  // host pointer, length history_len (nullable)
     int    history_len;
 } PSOResult;
@@ -83,7 +87,7 @@ void pso_result_free(PSOResult* result);
 //           cudaMalloc positions, velocities, pbest_pos, pbest, fitness,
 //           gbest_pos, d_reduce_out, reduce_tmp workspace, cuRAND states.
 // swarm_free(swarm*) — paired cudaFree, null out pointers.
-// swarm_init(swarm*, const PSOConfig*, unsigned long long seed)
+// swarm_init(swarm*, const PSOConfig*)
 //           launch curand_init kernel; fill positions ~ U[bound_lo, bound_hi];
 //           velocities ~ U[-|hi-lo|, |hi-lo|] (or zero); seed pbest = +INF.
 // =============================================================================
@@ -92,4 +96,4 @@ void pso_result_free(PSOResult* result);
 
 cudaError_t swarm_alloc(swarm* s, const PSOConfig* cfg);
 cudaError_t swarm_free(swarm* s);
-cudaError_t swarm_init(swarm* s, const PSOConfig* cfg, unsigned long long seed);
+cudaError_t swarm_init(swarm* s, const PSOConfig* cfg);
