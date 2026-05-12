@@ -17,7 +17,7 @@ Kernel Declarations:
 │                                                     │
 │  4. UPDATE V & X   per-element velocity + position  │
 │     1 thread per (particle × dim)                  │
-│     Needs RNG — cuRAND state per thread             │
+│     Needs RNG — cuRAND state per particle          │
 └─────────────────────────────────────────────────────┘
 */
 
@@ -116,6 +116,7 @@ __global__ void kernel_update(
 //           - Warp-per-dimension, thread-per-particle (Idea 2 from README).
 //           - threadIdx.x indexes particle; warp/blockIdx.y indexes dim slice.
 //           - Draw r1, r2 from per-thread curandState.
+//           - NB one draw per particle
 //           - v = w*v + c1*r1*(pbest_pos - pos) + c2*r2*(gbest_pos - pos)
 //           - pos = clamp(pos + v, bound_lo, bound_hi)
 //           - gbest_pos[d] is broadcast — load via __ldg or stage in shared mem.

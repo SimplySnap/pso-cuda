@@ -2,6 +2,22 @@
 //
 // TODO(M3): __global__ kernel_curand_init(curandState* states, ull seed, int n)
 //           One thread per RNG slot. Run once during swarm_init.
+__global__ kernel_curand_init(curandState* states, ull seed, int n_particles){
+    /*
+    Initializes random seeds - runs once inside swarm_init(), before pso_run() ever starts
+    cuRAND requires each state curandState to be initialized before curand_uniform()
+    One thread per RNG slot to sample unique slots
+    curand_uniform called exactly twice at the top of the thread/particle's body in update kernel
+    */
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid >= n_particles) return;
+
+    // Each particle gets a unique sequence number → non-overlapping
+    // subsequences, even with a shared seed. 
+    //offset=0 is fine here since we never fast-forward any state.
+    curand_init(seed, /*sequence=*/tid, /*offset=*/0, &states[tid]);
+}
+
 //
 // TODO(M3): __global__ kernel_eval_and_pbest(
 //               const float* positions,   // [D*N] SoA

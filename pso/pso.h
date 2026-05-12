@@ -53,7 +53,7 @@ typedef struct {
     //   (a) is lighter on memory (XORWOW state ~48B); (b) matches the
     //   warp-per-dim update kernel's thread layout 1:1. Recommend (b).
     //
-    curandState* d_rng_states; // device ptr, one curandState per (particle,dim) or per particle depending on policy choice.
+    curandState* d_rng_states; // device ptr, one curandState per per particle.
 
 } swarm;
 
