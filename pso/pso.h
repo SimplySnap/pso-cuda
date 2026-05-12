@@ -51,14 +51,14 @@ typedef struct {
     ReduceResult* d_reduce_out; // device ptr, single ReduceResult
 
     float* d_gbest_history; // device ptr, [max_iters], filled one entry/iter for convergence figure in progress report.
-    // TODO(M3): curandState* d_rng_states;
+    // curandState* d_rng_states;
     //   Decide policy BEFORE swarm_alloc:
     //     (a) one state per particle    -> N states, serial D draws in update
     //     (b) one state per (particle,dim) -> N*D states, parallel draws
     //   (a) is lighter on memory (XORWOW state ~48B); (b) matches the
     //   warp-per-dim update kernel's thread layout 1:1. Recommend (b).
     //
-    curandState* d_rng_states; // device ptr, one curandState per per particle.
+    curandState* d_rng_states; // device ptr, one curandState per per (particle, dim).
 
 } swarm;
 
@@ -76,11 +76,11 @@ void pso_result_free(PSOResult* result);
 // =============================================================================
 // Milestone 3 — single-GPU TODOs (header surface)
 // =============================================================================
-// TODO(M3): swarm_alloc(swarm*, const PSOConfig*)
+// swarm_alloc(swarm*, const PSOConfig*)
 //           cudaMalloc positions, velocities, pbest_pos, pbest, fitness,
 //           gbest_pos, d_reduce_out, reduce_tmp workspace, cuRAND states.
-// TODO(M3): swarm_free(swarm*) — paired cudaFree, null out pointers.
-// TODO(M3): swarm_init(swarm*, const PSOConfig*, unsigned long long seed)
+// swarm_free(swarm*) — paired cudaFree, null out pointers.
+// swarm_init(swarm*, const PSOConfig*, unsigned long long seed)
 //           launch curand_init kernel; fill positions ~ U[bound_lo, bound_hi];
 //           velocities ~ U[-|hi-lo|, |hi-lo|] (or zero); seed pbest = +INF.
 // =============================================================================

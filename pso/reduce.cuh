@@ -4,8 +4,8 @@
 #include <cuda_runtime.h>
 
 typedef struct {
-    float val;
     int   idx;
+    float val;
 } ReduceResult;
 
 void reduce_argmin_cub(const float* pbest, int N,

@@ -99,10 +99,10 @@ __global__ void kernel_update(
     int N, int D);
 // --- KERNELS ----------------------
 //
-// TODO(M3): __global__ kernel_curand_init(curandState* states, ull seed, int n)
+// __global__ kernel_curand_init(curandState* states, ull seed, int n)
 //           One thread per RNG slot. Run once during swarm_init.
 //
-// TODO(M3): __global__ kernel_eval_and_pbest(
+// __global__ kernel_eval_and_pbest(
 //               const float* positions,   // [D*N] SoA
 //               float*       fitness,     // [N]
 //               float*       pbest,       // [N]
@@ -114,7 +114,7 @@ __global__ void kernel_update(
 //           - If fit < pbest[i]: write pbest[i] = fit, copy positions slice -> pbest_pos.
 //           - Fuses eval + pbest update (one pass over particle state).
 //
-// TODO(M3): __global__ kernel_update(
+// __global__ kernel_update(
 //               float* positions, float* velocities,
 //               const float* pbest_pos, const float* gbest_pos,
 //               curandState* states,
