@@ -261,7 +261,8 @@ PSOResult pso_run(const PSOConfig* cfg, EvaluatorFn evaluator, int islands, char
     int n_entries = cfg->n_particles * cfg->n_dims;
     dim3 entry_block(256);
     dim3 entry_grid((n_entries + entry_block.x - 1) / entry_block.x);
-    //main iteration loop
+
+    //------------------MAIN ITERATION LOOP------------------
     for (int iter = 0; iter < cfg->max_iters; ++iter) {
         //evaluate compare current position with pbest
         kernel_eval_and_pbest<<<particle_grid, particle_block>>>(
