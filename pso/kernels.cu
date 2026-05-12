@@ -5,7 +5,7 @@
 
 // --- KERNELS ----------------------
 //
-// TODO(M3): __global__ kernel_curand_init(curandState* states, ull seed, int n)
+// __global__ kernel_curand_init(curandState* states, ull seed, int n)
 //           One thread per RNG slot. Run once during swarm_init.
 __global__ void kernel_curand_init(
     curandState* states,
@@ -27,7 +27,7 @@ __global__ void kernel_curand_init(
 }
 
 //
-// TODO(M3): __global__ kernel_eval_and_pbest(
+// __global__ kernel_eval_and_pbest(
 //               const float* positions,   // [D*N] SoA
 //               float*       fitness,     // [N]
 //               float*       pbest,       // [N]
@@ -94,7 +94,7 @@ __global__ void kernel_draw_rng(
     r1[part] = curand_uniform(&states[part]);
     r2[part] = curand_uniform(&states[part]);
 }
-// TODO(M3): __global__ kernel_update(
+// __global__ kernel_update(
 //               float* positions, float* velocities,
 //               const float* pbest_pos, const float* gbest_pos,
 //               curandState* states,

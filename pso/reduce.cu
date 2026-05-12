@@ -12,7 +12,7 @@
 //           - L3 (optional, large grids): staging array of block winners +
 //                 second kernel for final argmin (avoid atomicCAS contention).
 //
-// TODO(M3): __global__ kernel_copy_gbest_pos(
+// __global__ kernel_copy_gbest_pos(
 //               const float* pbest_pos, float* gbest_pos,
 //               const ReduceResult* d_in, int N, int D)
 //           - D threads gather gbest_pos[d] = pbest_pos[d*N + d_in->idx].
@@ -23,6 +23,7 @@
 #include "reduce.cuh"
 #include "cuda_check.cuh"
 #include <limits>
+#include <cub/cub.cuh>
 
 void reduce_argmin_cub(const float* pbest, int N,
                     void* tmp, size_t tmp_bytes,
@@ -34,11 +35,13 @@ void reduce_argmin_cub(const float* pbest, int N,
 
   // Stub for teammate-owned CUB reduction. It keeps pso_run linkable but
   // deliberately reports "no valid best" until the real reducer is implemented.
-  ReduceResult stub{};
-  stub.val = std::numeric_limits<float>::infinity();
-  stub.idx = -1;
-  CUDA_CHECK(cudaMemcpyAsync(d_out, &stub, sizeof(ReduceResult),
-      cudaMemcpyHostToDevice, s));
+
+
+  CUDA_CHECK(cub::DeviceReduce::ArgMin(
+      tmp, tmp_bytes,
+      pbest,
+      reinterpret_cast<cub::KeyValuePair<int,float>*>(d_out),
+      N, s));
 }
 
 __global__ void kernel_copy_gbest_pos(

@@ -65,3 +65,4 @@ __device__ float schaffer_f2_fn(const float* x, int n_dim) {
 __device__ EvaluatorFn d_levy_ptr = levy_fn;
 __device__ EvaluatorFn d_rastrigin_ptr = rastrigin_fn;
 __device__ EvaluatorFn d_schaffer_ptr = schaffer_f2_fn;
+EvaluatorFn h_fn = nullptr; //initialized in main.cu by cudaMemcpyFromSymbol

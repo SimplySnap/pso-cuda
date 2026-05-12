@@ -1,6 +1,6 @@
 // --- HOST DRIVER (new: main.cu or bench/main.cu) -----------------------------
 //
-// TODO(M3): CUDA_CHECK macro (wrap every cuda* / kernel launch).
+// CUDA_CHECK macro (wrap every cuda* / kernel launch).
 // TODO(M3): main.cu — parse argv for {evaluator name, N, D, iters, seed},
 //                     build PSOConfig, call pso_run, print best_value + pos.
 // TODO(M3): cudaEvent timers around full run + each kernel; print ms breakdown.
