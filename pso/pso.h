@@ -40,6 +40,8 @@ typedef struct {
     float gbest_val; //scalar best fitness seen across all particles
     int gbest_idx; //global best index
     float* gbest_pos; //[n_dims] - needed for less wasteful memory management
+    float* d_gbest_val; // device ptr, scalar best fitness
+    int* d_gbest_idx; // device ptr, scalar best particle index
 
     //Reduction workspace — strategy-agnostic blob
     //(lets us call argmin() OR )

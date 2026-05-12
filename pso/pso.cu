@@ -124,6 +124,8 @@ cudaError_t swarm_alloc(swarm* s, const PSOConfig* cfg) {
     CUDA_CHECK(cudaMalloc(&s->pbest, sizeof(float) * cfg->n_particles));
     CUDA_CHECK(cudaMalloc(&s->fitness, sizeof(float) * cfg->n_particles));
     CUDA_CHECK(cudaMalloc(&s->gbest_pos, sizeof(float) * cfg->n_dims));
+    CUDA_CHECK(cudaMalloc(&s->d_gbest_val, sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&s->d_gbest_idx, sizeof(int)));
     CUDA_CHECK(cudaMalloc(&s->d_reduce_out, sizeof(ReduceResult)));
     CUDA_CHECK(cudaMalloc(&s->d_gbest_history, sizeof(float) * cfg->max_iters));
     //   Option 1- One state per thread in kernel_update (most flexible, max memory). 
@@ -146,6 +148,8 @@ cudaError_t swarm_free(swarm* s) {
     CUDA_CHECK(cudaFree(s->pbest)); s->pbest = nullptr;
     CUDA_CHECK(cudaFree(s->fitness)); s->fitness = nullptr;
     CUDA_CHECK(cudaFree(s->gbest_pos)); s->gbest_pos = nullptr;
+    CUDA_CHECK(cudaFree(s->d_gbest_val)); s->d_gbest_val = nullptr;
+    CUDA_CHECK(cudaFree(s->d_gbest_idx)); s->d_gbest_idx = nullptr;
     CUDA_CHECK(cudaFree(s->d_reduce_out)); s->d_reduce_out = nullptr;
     CUDA_CHECK(cudaFree(s->d_gbest_history)); s->d_gbest_history = nullptr;
     CUDA_CHECK(cudaFree(s->d_rng_states)); s->d_rng_states = nullptr;
@@ -169,6 +173,11 @@ cudaError_t swarm_init(swarm* s, const PSOConfig* cfg, unsigned long long seed) 
 
     s->gbest_val = std::numeric_limits<float>::infinity();
     s->gbest_idx = -1;
+    CUDA_CHECK(cudaMemcpy(s->d_gbest_val, &s->gbest_val,
+        sizeof(float), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(s->d_gbest_idx, &s->gbest_idx,
+        sizeof(int), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemset(s->gbest_pos, 0, sizeof(float) * cfg->n_dims));
 
     int n_entries = cfg->n_particles * cfg->n_dims;
     dim3 block_init(256);
@@ -244,9 +253,6 @@ PSOResult pso_run(const PSOConfig* cfg, EvaluatorFn evaluator, int islands, char
     int n_entries = cfg->n_particles * cfg->n_dims;
     dim3 entry_block(256);
     dim3 entry_grid((n_entries + entry_block.x - 1) / entry_block.x);
-    dim3 dim_block(256);
-    dim3 dim_grid((cfg->n_dims + dim_block.x - 1) / dim_block.x);
-
     for (int iter = 0; iter < cfg->max_iters; ++iter) {
         kernel_eval_and_pbest<<<particle_grid, particle_block>>>(
             s.positions, s.fitness, s.pbest, s.pbest_pos,
@@ -258,32 +264,25 @@ PSOResult pso_run(const PSOConfig* cfg, EvaluatorFn evaluator, int islands, char
             s.reduce_tmp, s.reduce_tmp_bytes,
             s.d_reduce_out, 0);
 
-        ReduceResult h_reduce{};
-        CUDA_CHECK(cudaMemcpy(&h_reduce, s.d_reduce_out,
-            sizeof(ReduceResult), cudaMemcpyDeviceToHost));
+        kernel_commit_gbest<<<1, 1>>>(
+            s.d_reduce_out, s.pbest_pos, s.gbest_pos,
+            s.d_gbest_val, s.d_gbest_idx, s.d_gbest_history,
+            iter, cfg->n_particles, cfg->n_dims);
+        CUDA_CHECK(cudaGetLastError());
 
-        if (h_reduce.val < s.gbest_val) {
-            s.gbest_val = h_reduce.val;
-            s.gbest_idx = h_reduce.idx;
-            kernel_copy_gbest_pos<<<dim_grid, dim_block>>>(
-                s.pbest_pos, s.gbest_pos, s.d_reduce_out,
-                cfg->n_particles, cfg->n_dims);
-            CUDA_CHECK(cudaGetLastError());
-        }
-
-        CUDA_CHECK(cudaMemcpy(s.d_gbest_history + iter, &s.gbest_val,
-            sizeof(float), cudaMemcpyHostToDevice));
-
-        if (s.gbest_idx >= 0) {
-            kernel_update<<<entry_grid, entry_block>>>(
-                s.positions, s.velocities, s.pbest_pos, s.gbest_pos,
-                s.d_rng_states, cfg->w, cfg->c1, cfg->c2,
-                cfg->bound_lo, cfg->bound_hi,
-                cfg->n_particles, cfg->n_dims);
-            CUDA_CHECK(cudaGetLastError());
-        }
+        kernel_update<<<entry_grid, entry_block>>>(
+            s.positions, s.velocities, s.pbest_pos, s.gbest_pos,
+            s.d_rng_states, cfg->w, cfg->c1, cfg->c2,
+            cfg->bound_lo, cfg->bound_hi,
+            cfg->n_particles, cfg->n_dims);
+        CUDA_CHECK(cudaGetLastError());
     }
     CUDA_CHECK(cudaDeviceSynchronize());
+
+    CUDA_CHECK(cudaMemcpy(&s.gbest_val, s.d_gbest_val,
+        sizeof(float), cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(&s.gbest_idx, s.d_gbest_idx,
+        sizeof(int), cudaMemcpyDeviceToHost));
 
     PSOResult result{};
     result.best_position = static_cast<float*>(std::malloc(sizeof(float) * cfg->n_dims));
