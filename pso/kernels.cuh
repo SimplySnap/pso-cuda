@@ -70,6 +70,13 @@ void reduce_argmin(
     int           n_particles,
     cudaStream_t  stream);
 
+//update-kernel rng
+__global__ void kernel_draw_rng(
+    curandState* __restrict__ states,
+    float*       __restrict__ r1,
+    float*       __restrict__ r2,
+    int N);
+
 // Commit gbest — device-resident compare + conditional copy
 __global__ void kernel_commit_gbest(
     const ReduceResult* __restrict__ d_reduce_out,
