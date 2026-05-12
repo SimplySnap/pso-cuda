@@ -111,6 +111,7 @@ pso.cu
 #include <cstdio>
 #include <cstdlib>
 #include <limits>
+#include <vector>
 
 cudaError_t swarm_alloc(swarm* s, const PSOConfig* cfg) {
     s->reduce_tmp_bytes = 0;
@@ -239,6 +240,10 @@ PSOResult pso_run(const PSOConfig* cfg, EvaluatorFn evaluator, int islands, char
         std::fprintf(stderr, "pso_run requires a non-null config and evaluator.\n");
         std::exit(EXIT_FAILURE);
     }
+    if (cfg->n_particles <= 0 || cfg->n_dims <= 0 || cfg->max_iters <= 0) {
+        std::fprintf(stderr, "pso_run requires positive N, D, and max_iters.\n");
+        std::exit(EXIT_FAILURE);
+    }
 
     swarm s{};
     CUDA_CHECK(swarm_alloc(&s, cfg));
@@ -249,11 +254,27 @@ PSOResult pso_run(const PSOConfig* cfg, EvaluatorFn evaluator, int islands, char
     int n_entries = cfg->n_particles * cfg->n_dims;
     dim3 entry_block(256);
     dim3 entry_grid((n_entries + entry_block.x - 1) / entry_block.x);
+
+    std::vector<cudaEvent_t> iter_start(cfg->max_iters);
+    std::vector<cudaEvent_t> eval_done(cfg->max_iters);
+    std::vector<cudaEvent_t> reduce_done(cfg->max_iters);
+    std::vector<cudaEvent_t> update_done(cfg->max_iters);
     for (int iter = 0; iter < cfg->max_iters; ++iter) {
+        CUDA_CHECK(cudaEventCreate(&iter_start[iter]));
+        CUDA_CHECK(cudaEventCreate(&eval_done[iter]));
+        CUDA_CHECK(cudaEventCreate(&reduce_done[iter]));
+        CUDA_CHECK(cudaEventCreate(&update_done[iter]));
+    }
+
+    // Record all stage boundaries first, then query elapsed times after the
+    // final sync. This avoids adding a host synchronization inside each PSO iter.
+    for (int iter = 0; iter < cfg->max_iters; ++iter) {
+        CUDA_CHECK(cudaEventRecord(iter_start[iter], 0));
         kernel_eval_and_pbest<<<particle_grid, particle_block>>>(
             s.positions, s.fitness, s.pbest, s.pbest_pos,
             evaluator, cfg->n_particles, cfg->n_dims);
         CUDA_CHECK(cudaGetLastError());
+        CUDA_CHECK(cudaEventRecord(eval_done[iter], 0));
 
         reduce_argmin_cub(
             s.pbest, cfg->n_particles,
@@ -265,6 +286,7 @@ PSOResult pso_run(const PSOConfig* cfg, EvaluatorFn evaluator, int islands, char
             s.d_gbest_val, s.d_gbest_idx, s.d_gbest_history,
             iter, cfg->n_particles, cfg->n_dims);
         CUDA_CHECK(cudaGetLastError());
+        CUDA_CHECK(cudaEventRecord(reduce_done[iter], 0));
 
         kernel_update<<<entry_grid, entry_block>>>(
             s.positions, s.velocities, s.pbest_pos, s.gbest_pos,
@@ -272,8 +294,29 @@ PSOResult pso_run(const PSOConfig* cfg, EvaluatorFn evaluator, int islands, char
             cfg->bound_lo, cfg->bound_hi,
             cfg->n_particles, cfg->n_dims);
         CUDA_CHECK(cudaGetLastError());
+        CUDA_CHECK(cudaEventRecord(update_done[iter], 0));
     }
-    CUDA_CHECK(cudaDeviceSynchronize());
+    CUDA_CHECK(cudaEventSynchronize(update_done[cfg->max_iters - 1]));
+
+    float eval_ms = 0.0f;
+    float reduce_ms = 0.0f;
+    float update_ms = 0.0f;
+    for (int iter = 0; iter < cfg->max_iters; ++iter) {
+        float stage_ms = 0.0f;
+        CUDA_CHECK(cudaEventElapsedTime(&stage_ms, iter_start[iter], eval_done[iter]));
+        eval_ms += stage_ms;
+        CUDA_CHECK(cudaEventElapsedTime(&stage_ms, eval_done[iter], reduce_done[iter]));
+        reduce_ms += stage_ms;
+        CUDA_CHECK(cudaEventElapsedTime(&stage_ms, reduce_done[iter], update_done[iter]));
+        update_ms += stage_ms;
+    }
+
+    for (int iter = 0; iter < cfg->max_iters; ++iter) {
+        CUDA_CHECK(cudaEventDestroy(iter_start[iter]));
+        CUDA_CHECK(cudaEventDestroy(eval_done[iter]));
+        CUDA_CHECK(cudaEventDestroy(reduce_done[iter]));
+        CUDA_CHECK(cudaEventDestroy(update_done[iter]));
+    }
 
     CUDA_CHECK(cudaMemcpy(&s.gbest_val, s.d_gbest_val,
         sizeof(float), cudaMemcpyDeviceToHost));
@@ -281,6 +324,10 @@ PSOResult pso_run(const PSOConfig* cfg, EvaluatorFn evaluator, int islands, char
         sizeof(int), cudaMemcpyDeviceToHost));
 
     PSOResult result{};
+    result.eval_ms = eval_ms;
+    result.reduce_ms = reduce_ms;
+    result.update_ms = update_ms;
+    result.total_ms = eval_ms + reduce_ms + update_ms;
     result.best_position = static_cast<float*>(std::malloc(sizeof(float) * cfg->n_dims));
     if (result.best_position == nullptr) {
         std::fprintf(stderr, "Failed to allocate PSOResult.best_position.\n");
@@ -321,4 +368,8 @@ void pso_result_free(PSOResult* result) {
     result->gbest_history = nullptr;
     result->history_len = 0;
     result->best_value = 0.0f;
+    result->eval_ms = 0.0f;
+    result->reduce_ms = 0.0f;
+    result->update_ms = 0.0f;
+    result->total_ms = 0.0f;
 }
