@@ -116,13 +116,18 @@ __global__ void kernel_update(
     float w, float c1, float c2,
     float bound_lo, float bound_hi,
     int N, int D) {
+    /*
+    map thread ID to particle, block idx to dimension
+    ensures coalesced loads! Specifically,
+    SoA layout [d * N + particle], threads in the same warp have consecutive particle values and the same d
+    */
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     int n_entries = N * D;
-    if (idx >= n_entries) return;
+    if (idx >= n_entries) return; //guard
 
     int particle = idx % N;
     int dim = idx / N;
-    int offset = dim * N + particle;
+    int offset = dim * N + particle; //idx in memory
 
     curandState local_state = rng_states[offset];
     float r1 = curand_uniform(&local_state);
@@ -133,11 +138,14 @@ __global__ void kernel_update(
     float pb = pbest_pos[offset];
     float gb = gbest_pos[dim];
 
+    //update step
     float new_vel = w * vel
                   + c1 * r1 * (pb - pos)
                   + c2 * r2 * (gb - pos);
 
     float new_pos = pos + new_vel;
+
+    //clamping
     if (new_pos < bound_lo) {
         new_pos = bound_lo;
         new_vel = 0.0f;
@@ -145,40 +153,11 @@ __global__ void kernel_update(
         new_pos = bound_hi;
         new_vel = 0.0f;
     }
-
+    //write
     velocities[offset] = new_vel;
     positions[offset] = new_pos;
     rng_states[offset] = local_state;
 }
-/*
-Kernel structure:
-┌─────────────────────────────────────────────────────┐
-│  For each iteration:                                │
-│                                                     │
-│  1. EVALUATE       fitness[i] = f(positions[i])     │
-│     1 thread per particle                           │
-│                                                     │
-│  2. UPDATE PBEST   if fitness[i] < pbest_fit[i]:    │
-│                        pbest_pos[i] = positions[i]  │
-│                        pbest_fit[i] = fitness[i]    │
-│     Can fuse with step 1                            │
-│                                                     │
-│  3. REDUCE GBEST   gbest = min over all particles   │
-│     Parallel reduction → single warp shuffle or    │
-│     thrust::min_element                             │
-│                                                     │
-│  4. UPDATE V & X   per-element velocity + position  │
-│     1 thread per (particle × dim)                  │
-│     Needs RNG — cuRAND state per thread             │
-└─────────────────────────────────────────────────────┘
-*/
-
-//   (b) Single-thread device kernel "kernel_commit_gbest" that reads
-//       d_reduce_out, compares to a device-resident gbest_val, conditionally
-//       updates it, and runs the copy_gbest_pos gather inline.
-//       + Zero host sync in the inner loop; better for benchmarking.
-//       - Need a separate path to dump gbest_history to host at end.
-//   Recommend (b) + record gbest_history[it] from inside that same kernel.
 
 __global__ void kernel_commit_gbest(
     const ReduceResult* __restrict__ d_reduce_out,
@@ -189,12 +168,18 @@ __global__ void kernel_commit_gbest(
     float*                           d_gbest_history,  // [max_iters]
     int   iter,
     int N, int D) {
-        if (blockIdx.x != 0 || threadIdx.x != 0) return;
-        int best_idx = d_reduce_out->idx;
+        /*
+        Takes argmin result as input (d_reduce_out), local best positions and global best pos,
+        global best value and index
+        Conditionally global best value and index after comparison
+        */
+        if (blockIdx.x != 0 || threadIdx.x != 0) return; //guard for non (0,0) threads
+        int best_idx = d_reduce_out->idx; //
         float best_val = d_reduce_out->val;
         if (best_idx >= 0 && best_idx < N && best_val < *d_gbest_val) {
             *d_gbest_val = best_val;
             *d_gbest_idx = best_idx;
+            //write gbest_pos
             for (int d = 0; d < D; ++d) {
                 gbest_pos[d] = pbest_pos[d*N + best_idx];
             }
