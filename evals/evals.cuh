@@ -29,8 +29,6 @@ extern __device__ EvaluatorFn d_schaffer_ptr;
 //
 typedef float (*EvaluatorFn)(const float*, int);
 //
-//   // host:
-//
 // Without this indirection, the kernel will silently dereference a host address
 // and either segfault or return garbage fitness values.
 // =============================================================================

@@ -153,14 +153,14 @@ cudaError_t swarm_free(swarm* s) {
     return cudaSuccess;
 }
 
-cudaError_t swarm_init(swarm* s, const PSOConfig* cfg, unsigned long long seed) {
+cudaError_t swarm_init(swarm* s, const PSOConfig* cfg) {
     // IMPORTANT: Ensure the first
     //            eval_and_pbest pass uses `<` against pbest=+INF (always true) and
     //            unconditionally copies positions->pbest_pos on that first hit.
     int n_rng_states = cfg->n_particles * cfg->n_dims; // or cfg->n_particles if using one state per particle
     dim3 block_rng(256);
     dim3 grid_rng((n_rng_states + block_rng.x - 1) / block_rng.x);
-    kernel_curand_init<<<grid_rng, block_rng>>>(s->d_rng_states, seed, n_rng_states);
+    kernel_curand_init<<<grid_rng, block_rng>>>(s->d_rng_states, cfg->seed, n_rng_states);
     CUDA_CHECK(cudaGetLastError());
     // Smoke-test/debug sync: catches runtime failures inside the RNG init kernel
     // at the exact lifecycle stage where they happen. Later PSO iterations should
@@ -242,7 +242,7 @@ PSOResult pso_run(const PSOConfig* cfg, EvaluatorFn evaluator, int islands, char
 
     swarm s{};
     CUDA_CHECK(swarm_alloc(&s, cfg));
-    CUDA_CHECK(swarm_init(&s, cfg, 1234ULL));
+    CUDA_CHECK(swarm_init(&s, cfg));
 
     dim3 particle_block(256);
     dim3 particle_grid((cfg->n_particles + particle_block.x - 1) / particle_block.x);
@@ -298,6 +298,16 @@ PSOResult pso_run(const PSOConfig* cfg, EvaluatorFn evaluator, int islands, char
         }
     }
 
+    result.history_len = cfg->max_iters;
+    result.gbest_history = static_cast<float*>(
+        std::malloc(sizeof(float) * cfg->max_iters));
+    if (result.gbest_history != nullptr) {
+        CUDA_CHECK(cudaMemcpy(result.gbest_history, s.d_gbest_history,
+            sizeof(float) * cfg->max_iters, cudaMemcpyDeviceToHost));
+    } else {
+        result.history_len = 0;
+    }
+
     CUDA_CHECK(swarm_free(&s));
     return result;
 }
@@ -307,5 +317,8 @@ void pso_result_free(PSOResult* result) {
 
     std::free(result->best_position);
     result->best_position = nullptr;
+    std::free(result->gbest_history);
+    result->gbest_history = nullptr;
+    result->history_len = 0;
     result->best_value = 0.0f;
 }

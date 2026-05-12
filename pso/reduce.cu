@@ -33,10 +33,6 @@ void reduce_argmin_cub(const float* pbest, int N,
   (void)tmp;
   (void)tmp_bytes;
 
-  // Stub for teammate-owned CUB reduction. It keeps pso_run linkable but
-  // deliberately reports "no valid best" until the real reducer is implemented.
-
-
   CUDA_CHECK(cub::DeviceReduce::ArgMin(
       tmp, tmp_bytes,
       pbest,
@@ -56,6 +52,9 @@ __global__ void kernel_copy_gbest_pos(
 }
 
 size_t reduce_argmin_cub_workspace(int N) {
-  (void)N;
-  return sizeof(ReduceResult);
-} 
+  size_t bytes = 0;
+  cub::DeviceReduce::ArgMin(nullptr, bytes,
+      (float*)nullptr,
+      (cub::KeyValuePair<int,float>*)nullptr, N);
+  return bytes;
+}
