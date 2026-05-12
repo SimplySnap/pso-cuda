@@ -3,6 +3,7 @@
 
 # ---- toolchain ---------------------------------------------------------------
 NVCC      ?= nvcc
+CXX       ?= g++
 SM        ?= 75
 STD       ?= c++17
 
@@ -11,6 +12,7 @@ PSO_DIR    := pso
 EVAL_DIR   := evals
 BUILD_DIR  := build
 BIN        := $(BUILD_DIR)/pso_cuda
+CPU_BIN    := $(BUILD_DIR)/pso_cpu
 
 PSO_SRCS   := $(wildcard $(PSO_DIR)/*.cu)
 EVAL_SRCS  := $(wildcard $(EVAL_DIR)/*.cu)
@@ -30,6 +32,7 @@ ARCHFLAGS := -gencode arch=compute_$(SM),code=sm_$(SM)
 NVCCFLAGS := -std=$(STD) $(ARCHFLAGS) $(INCLUDES) \
              --expt-relaxed-constexpr \
              -Xcompiler -Wall,-Wextra
+CXXFLAGS  := -std=$(STD) -O3 -Wall -Wextra
 
 BUILD ?= release
 ifeq ($(BUILD),debug)
@@ -41,7 +44,7 @@ endif
 LDLIBS := -lcurand
 
 # ---- rules -------------------------------------------------------------------
-.PHONY: all clean run debug release info
+.PHONY: all clean run cpu bench-cpu debug release info
 
 all: $(BIN)
 
@@ -60,6 +63,15 @@ $(BUILD_DIR)/$(EVAL_DIR)/%.o: $(EVAL_DIR)/%.cu
 run: $(BIN)
 	./$(BIN)
 
+cpu: $(CPU_BIN)
+
+$(CPU_BIN): bench/pso_cpu.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) $< -o $@
+
+bench-cpu: $(CPU_BIN)
+	./$(CPU_BIN) 1024 30 100 1234
+
 debug:
 	$(MAKE) BUILD=debug
 
@@ -71,6 +83,7 @@ info:
 	@echo "EVAL_SRCS = $(EVAL_SRCS)"
 	@echo "OBJS      = $(OBJS)"
 	@echo "NVCCFLAGS = $(NVCCFLAGS)"
+	@echo "CXXFLAGS  = $(CXXFLAGS)"
 
 clean:
 	rm -rf $(BUILD_DIR)
