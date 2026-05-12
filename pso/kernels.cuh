@@ -22,25 +22,10 @@ Kernel Declarations:
 */
 
 #pragma once
-#include "pso.h"
-#include "reduce.cuh"
+
 #include <cuda_runtime.h>
 #include <curand_kernel.h>
-#include <cub/cub.cuh> //holds high performance primitives (reduction argmin needed)
-#include "../evals/evals.cuh"
-
-// ── Reduction result ──────────────────────────────────────────────────────
-/*
-needs to return minimum value & its index. Lets us receive one pointer with everything needed for reduction
-*/
-typedef struct {
-    float val;
-    int   idx;
-} ReduceResult;
-
-//need to declare number of bytes for nvidia cub::DeviceReduce - cub doesn't allocate mem internally
-//therefore, need to pass in buffer. This is what reduce_workspace_bytes gives us
-size_t reduce_workspace_bytes(int n_particles);
+#include "reduce.cuh"
 
 //Kernel declarations
 
@@ -52,6 +37,17 @@ __global__ void kernel_curand_init(
 
 //define D_MAX constant for array staging in kernel below
 #define MAX_D 128;
+
+// Swarm initialization — one thread per (dimension, particle) SoA entry
+__global__ void kernel_swarm_init(
+    float*       __restrict__ positions,
+    float*       __restrict__ velocities,
+    float*       __restrict__ pbest_pos,
+    float*       __restrict__ pbest,
+    float*       __restrict__ fitness,
+    curandState* __restrict__ states,
+    float bound_lo, float bound_hi,
+    int N, int D);
 
 // Eval + pbest update — one thread per particle
 __global__ void kernel_eval_and_pbest(

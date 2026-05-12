@@ -11,25 +11,25 @@
 //   Append-only to bench/results.csv. Then sweeping is a shell for-loop and
 //   the report's tables/figures come straight from the CSV (pandas/matplotlib).
 
-// main.cu — entry point for pso-cuda.
-// For now, just query and print CUDA device properties. Later, parse command-line
-// args, call pso_run(), and print results.
 #include <cstdio>
 #include <cuda_runtime.h>
 
-#define CUDA_CHECK(call) do {                                                  \
-    cudaError_t _e = (call);                                                   \
-    if (_e != cudaSuccess) {                                                   \
-        fprintf(stderr, "CUDA error %s:%d: %s\n",                              \
-                __FILE__, __LINE__, cudaGetErrorString(_e));                   \
-        return 1;                                                              \
-    }                                                                          \
-} while (0)
-
+#include "cuda_check.cuh"
 #include "pso.h"
-#include "evals.cuh"
 
 int main(void) {
+    int device_count = 0;
+    CUDA_CHECK(cudaGetDeviceCount(&device_count));
+    if (device_count == 0) {
+        std::fprintf(stderr, "No CUDA devices visible; run this on a gpu-turing node.\n");
+        return 1;
+    }
+
+    CUDA_CHECK(cudaSetDevice(0));
+    cudaDeviceProp prop{};
+    CUDA_CHECK(cudaGetDeviceProperties(&prop, 0));
+    std::printf("Using CUDA device 0: %s\n", prop.name);
+
     PSOConfig cfg = {
         .n_particles = 1024,
         .n_dims      = 30,
@@ -43,10 +43,26 @@ int main(void) {
         .topology    = nullptr,
     };
 
-    // EvaluatorFn h_fn;
-    // cudaMemcpyFromSymbol(&h_fn, d_rastrigin_ptr, sizeof(EvaluatorFn));
-    // PSOResult r = pso_run(&cfg, h_fn, /*islands=*/1);
-    // printf("best = %g\n", r.best_value);
-    // pso_result_free(&r);
+    swarm s{};
+    CUDA_CHECK(swarm_alloc(&s, &cfg));
+    CUDA_CHECK(swarm_init(&s, &cfg, 1234ULL));
+
+    float first_position = 0.0f;
+    float first_pbest = 0.0f;
+    CUDA_CHECK(cudaMemcpy(&first_position, s.positions, sizeof(float), cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(&first_pbest, s.pbest, sizeof(float), cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    std::printf("Smoke sample: positions[dim=0, particle=0] = %.6f, pbest[0] = %g\n",
+        first_position, first_pbest);
+    std::printf("Host gbest initialized: value = %g, idx = %d\n", s.gbest_val, s.gbest_idx);
+
+    CUDA_CHECK(swarm_free(&s));
+    // Smoke-test/debug sync: confirms all CUDA work, including cleanup-adjacent
+    // runtime bookkeeping, has completed before reporting success.
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    std::printf("PSO swarm alloc/init/free smoke test passed for N=%d, D=%d.\n",
+        cfg.n_particles, cfg.n_dims);
     return 0;
 }

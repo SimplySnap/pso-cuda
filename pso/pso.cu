@@ -112,8 +112,10 @@ pso.cu
 #include "kernels.cuh"
 #include "cuda_check.cuh"
 #include <math_constants.h>
+#include <limits>
 
 cudaError_t swarm_alloc(swarm* s, const PSOConfig* cfg) {
+    s->reduce_tmp_bytes = 0;
     CUDA_CHECK(cudaMalloc(&s->positions, sizeof(float) * cfg->n_particles * cfg->n_dims));
     CUDA_CHECK(cudaMalloc(&s->velocities, sizeof(float) * cfg->n_particles * cfg->n_dims));
     CUDA_CHECK(cudaMalloc(&s->pbest_pos, sizeof(float) * cfg->n_particles * cfg->n_dims));
@@ -158,28 +160,66 @@ cudaError_t swarm_init(swarm* s, const PSOConfig* cfg, unsigned long long seed) 
     dim3 grid_rng((n_rng_states + block_rng.x - 1) / block_rng.x);
     kernel_curand_init<<<grid_rng, block_rng>>>(s->d_rng_states, seed, n_rng_states);
     CUDA_CHECK(cudaGetLastError());
-    s->gbest_val = +CUDART_INF_F, s->gbest_idx = -1.f;
+    // Smoke-test/debug sync: catches runtime failures inside the RNG init kernel
+    // at the exact lifecycle stage where they happen. Later PSO iterations should
+    // avoid per-kernel synchronization unless timing or debugging requires it.
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    s->gbest_val = std::numeric_limits<float>::infinity();
+    s->gbest_idx = -1;
+
+    int n_entries = cfg->n_particles * cfg->n_dims;
     dim3 block_init(256);
-    dim3 grid_init((cfg->n_particles + block_init.x - 1) / block_init.x);
-    kernel_swarm_init<<<grid_init, block_init>>>(s->positions, s->velocities, s->pbest_pos, s->pbest, s->d_rng_states, cfg->n_particles, cfg->n_dims);
+    dim3 grid_init((n_entries + block_init.x - 1) / block_init.x);
+    kernel_swarm_init<<<grid_init, block_init>>>(
+        s->positions, s->velocities, s->pbest_pos, s->pbest, s->fitness,
+        s->d_rng_states, cfg->bound_lo, cfg->bound_hi,
+        cfg->n_particles, cfg->n_dims);
     CUDA_CHECK(cudaGetLastError());
+    // Smoke-test/debug sync: makes swarm_init return only after device memory is
+    // fully initialized, and surfaces any init-kernel error before main copies a sample.
+    CUDA_CHECK(cudaDeviceSynchronize());
     return cudaSuccess;
 }
 
-__global__ void kernel_swarm_init(float* positions, float* velocities, float* pbest_pos, float* pbest, curandState* d_states, int n_particles, int n_dims) {
+__global__ void kernel_swarm_init(
+    float*       __restrict__ positions,
+    float*       __restrict__ velocities,
+    float*       __restrict__ pbest_pos,
+    float*       __restrict__ pbest,
+    float*       __restrict__ fitness,
+    curandState* __restrict__ d_states,
+    float bound_lo, float bound_hi,
+    int n_particles, int n_dims) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx < n_particles) {
-        // Initialize positions, velocities, and pbest values here using d_states for random numbers.
-        curandState local_state = d_states[idx]; // or d_states[idx * n_dims + dim] if using one state per (particle,dim)
-        for (int d = 0; d < n_dims; d++) {
-            // Random initialization assuming bounds are -1 to 1 for simplicity; adjust as needed:
-            float rand_pos = curand_uniform(&local_state) * 2.0f - 1.0f; // random float in [-1, 1]
-            float rand_vel = curand_uniform(&local_state) * 0.1f - 0.05f; // random float in [-0.05, 0.05]
-            positions[idx * n_dims + d] = rand_pos;
-            velocities[idx * n_dims + d] = rand_vel;
-            pbest_pos[idx * n_dims + d] = rand_pos; // Initial pbest position same as initial position
-        }
-        pbest[idx] = +CUDART_INF_F; // Initial pbest fitness is +INF
-        d_states[idx] = local_state; // Save back state if needed
+    int n_entries = n_particles * n_dims;
+    if (idx >= n_entries) return;
+
+    // SoA layout: each dimension owns one contiguous stripe of N particles.
+    // This makes positions[dim][particle] adjacent across particle IDs.
+    int particle = idx % n_particles;
+    int dim = idx / n_particles;
+    int offset = dim * n_particles + particle;
+    float span = bound_hi - bound_lo;
+
+    // One RNG state per (particle, dim) entry. This matches the later planned
+    // update kernel where each thread updates one position/velocity element.
+    curandState local_state = d_states[idx];
+    float rand_pos = bound_lo + curand_uniform(&local_state) * span;
+    float rand_vel = (curand_uniform(&local_state) * 2.0f - 1.0f) * span;
+
+    // Seed current position, velocity, and personal-best position consistently.
+    // Fitness values stay +INF until the first evaluator kernel runs.
+    positions[offset] = rand_pos;
+    velocities[offset] = rand_vel;
+    pbest_pos[offset] = rand_pos;
+
+    // Only one dimension thread should initialize each particle-level scalar.
+    if (dim == 0) {
+        pbest[particle] = +CUDART_INF_F;
+        fitness[particle] = +CUDART_INF_F;
     }
+
+    // Save the advanced RNG state so future kernels continue the sequence.
+    d_states[idx] = local_state;
 }

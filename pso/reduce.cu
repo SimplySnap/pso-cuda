@@ -21,6 +21,7 @@
 
 #include "pso.h"
 #include "reduce.cuh"
+#include <cub/cub.cuh>
 void reduce_argmin_cub(const float* pbest, int N,
                     void* tmp, size_t tmp_bytes,
                     ReduceResult* d_out, cudaStream_t s);
