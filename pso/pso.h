@@ -8,8 +8,11 @@
 #include <curand_kernel.h>
 #include "reduce.cuh"
 
+#ifndef PSO_EVALUATOR_FN_DEFINED
+#define PSO_EVALUATOR_FN_DEFINED
 // Device-callable evaluator function pointer type
 typedef float (*EvaluatorFn)(const float* position, int n_dim);
+#endif
 
 /*Structures: config, best soln, particle*/
 typedef struct {

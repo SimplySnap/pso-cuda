@@ -27,6 +27,11 @@ Kernel Declarations:
 #include <curand_kernel.h>
 #include "reduce.cuh"
 
+#ifndef PSO_EVALUATOR_FN_DEFINED
+#define PSO_EVALUATOR_FN_DEFINED
+typedef float (*EvaluatorFn)(const float* position, int n_dim);
+#endif
+
 //Kernel declarations
 
 //two random numbers per iteration per particle
@@ -34,9 +39,6 @@ __global__ void kernel_curand_init(
     curandState* states,
     unsigned long long seed,
     int n);
-
-//define D_MAX constant for array staging in kernel below
-#define MAX_D 128;
 
 // Swarm initialization — one thread per (dimension, particle) SoA entry
 __global__ void kernel_swarm_init(
@@ -55,6 +57,7 @@ __global__ void kernel_eval_and_pbest(
     float*       __restrict__ fitness,    // [N] - scalar each
     float*       __restrict__ pbest_fit,  // [N] - pbest scalar fitness
     float*       __restrict__ pbest_pos,  // [N * D]
+    EvaluatorFn evaluator,
     int N, int D);
 
 // Argmin reduction — wraps CUB; swap body for custom later

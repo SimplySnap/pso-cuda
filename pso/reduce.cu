@@ -21,20 +21,38 @@
 
 #include "pso.h"
 #include "reduce.cuh"
-#include <cub/cub.cuh>
+#include "cuda_check.cuh"
+#include <limits>
+
 void reduce_argmin_cub(const float* pbest, int N,
                     void* tmp, size_t tmp_bytes,
-                    ReduceResult* d_out, cudaStream_t s);
-void reduce_argmin_custom(const float* pbest, int N,
-                    void* tmp, size_t tmp_bytes,
-                    ReduceResult* d_out, cudaStream_t s);
+                    ReduceResult* d_out, cudaStream_t s) {
+  (void)pbest;
+  (void)N;
+  (void)tmp;
+  (void)tmp_bytes;
+
+  // Stub for teammate-owned CUB reduction. It keeps pso_run linkable but
+  // deliberately reports "no valid best" until the real reducer is implemented.
+  ReduceResult stub{};
+  stub.val = std::numeric_limits<float>::infinity();
+  stub.idx = -1;
+  CUDA_CHECK(cudaMemcpyAsync(d_out, &stub, sizeof(ReduceResult),
+      cudaMemcpyHostToDevice, s));
+}
+
 __global__ void kernel_copy_gbest_pos(
               const float* pbest_pos, float* gbest_pos,
-            const ReduceResult* d_in, int N, int D);  
+            const ReduceResult* d_in, int N, int D) {
+  int d = blockIdx.x * blockDim.x + threadIdx.x;
+  if (d >= D) return;
+
+  int best_idx = d_in->idx;
+  if (best_idx < 0 || best_idx >= N) return;
+  gbest_pos[d] = pbest_pos[d * N + best_idx];
+}
 
 size_t reduce_argmin_cub_workspace(int N) {
-  size_t bytes = 0;
-  cub::DeviceReduce::ArgMin(nullptr, bytes,
-    (float*)nullptr, (cub::KeyValuePair<int,float>*)nullptr, N);
-  return bytes;
+  (void)N;
+  return sizeof(ReduceResult);
 } 

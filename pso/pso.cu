@@ -112,6 +112,8 @@ pso.cu
 #include "kernels.cuh"
 #include "cuda_check.cuh"
 #include <math_constants.h>
+#include <cstdio>
+#include <cstdlib>
 #include <limits>
 
 cudaError_t swarm_alloc(swarm* s, const PSOConfig* cfg) {
@@ -222,4 +224,93 @@ __global__ void kernel_swarm_init(
 
     // Save the advanced RNG state so future kernels continue the sequence.
     d_states[idx] = local_state;
+}
+
+PSOResult pso_run(const PSOConfig* cfg, EvaluatorFn evaluator, int islands, char* topology) {
+    (void)islands;
+    (void)topology;
+
+    if (cfg == nullptr || evaluator == nullptr) {
+        std::fprintf(stderr, "pso_run requires a non-null config and evaluator.\n");
+        std::exit(EXIT_FAILURE);
+    }
+
+    swarm s{};
+    CUDA_CHECK(swarm_alloc(&s, cfg));
+    CUDA_CHECK(swarm_init(&s, cfg, 1234ULL));
+
+    dim3 particle_block(256);
+    dim3 particle_grid((cfg->n_particles + particle_block.x - 1) / particle_block.x);
+    int n_entries = cfg->n_particles * cfg->n_dims;
+    dim3 entry_block(256);
+    dim3 entry_grid((n_entries + entry_block.x - 1) / entry_block.x);
+    dim3 dim_block(256);
+    dim3 dim_grid((cfg->n_dims + dim_block.x - 1) / dim_block.x);
+
+    for (int iter = 0; iter < cfg->max_iters; ++iter) {
+        kernel_eval_and_pbest<<<particle_grid, particle_block>>>(
+            s.positions, s.fitness, s.pbest, s.pbest_pos,
+            evaluator, cfg->n_particles, cfg->n_dims);
+        CUDA_CHECK(cudaGetLastError());
+
+        reduce_argmin_cub(
+            s.pbest, cfg->n_particles,
+            s.reduce_tmp, s.reduce_tmp_bytes,
+            s.d_reduce_out, 0);
+
+        ReduceResult h_reduce{};
+        CUDA_CHECK(cudaMemcpy(&h_reduce, s.d_reduce_out,
+            sizeof(ReduceResult), cudaMemcpyDeviceToHost));
+
+        if (h_reduce.val < s.gbest_val) {
+            s.gbest_val = h_reduce.val;
+            s.gbest_idx = h_reduce.idx;
+            kernel_copy_gbest_pos<<<dim_grid, dim_block>>>(
+                s.pbest_pos, s.gbest_pos, s.d_reduce_out,
+                cfg->n_particles, cfg->n_dims);
+            CUDA_CHECK(cudaGetLastError());
+        }
+
+        CUDA_CHECK(cudaMemcpy(s.d_gbest_history + iter, &s.gbest_val,
+            sizeof(float), cudaMemcpyHostToDevice));
+
+        if (s.gbest_idx >= 0) {
+            kernel_update<<<entry_grid, entry_block>>>(
+                s.positions, s.velocities, s.pbest_pos, s.gbest_pos,
+                s.d_rng_states, cfg->w, cfg->c1, cfg->c2,
+                cfg->bound_lo, cfg->bound_hi,
+                cfg->n_particles, cfg->n_dims);
+            CUDA_CHECK(cudaGetLastError());
+        }
+    }
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    PSOResult result{};
+    result.best_position = static_cast<float*>(std::malloc(sizeof(float) * cfg->n_dims));
+    if (result.best_position == nullptr) {
+        std::fprintf(stderr, "Failed to allocate PSOResult.best_position.\n");
+        CUDA_CHECK(swarm_free(&s));
+        std::exit(EXIT_FAILURE);
+    }
+
+    result.best_value = s.gbest_val;
+    if (s.gbest_idx >= 0) {
+        CUDA_CHECK(cudaMemcpy(result.best_position, s.gbest_pos,
+            sizeof(float) * cfg->n_dims, cudaMemcpyDeviceToHost));
+    } else {
+        for (int d = 0; d < cfg->n_dims; ++d) {
+            result.best_position[d] = 0.0f;
+        }
+    }
+
+    CUDA_CHECK(swarm_free(&s));
+    return result;
+}
+
+void pso_result_free(PSOResult* result) {
+    if (result == nullptr) return;
+
+    std::free(result->best_position);
+    result->best_position = nullptr;
+    result->best_value = 0.0f;
 }

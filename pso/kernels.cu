@@ -1,6 +1,7 @@
 #include "kernels.cuh"
 #include "reduce.cuh"
 #include "cuda_check.cuh"
+#include <math_constants.h>
 
 // --- KERNELS ----------------------
 //
@@ -17,7 +18,7 @@ __global__ void kernel_curand_init(
     curand_uniform called exactly twice at the top of the thread/particle's body in update kernel
     */
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
-    if (tid >= N) return;
+    if (tid >= n_particles) return;
 
     // Each particle gets a unique sequence number → non-overlapping
     // subsequences, even with a shared seed. 
@@ -38,7 +39,7 @@ __global__ void kernel_curand_init(
 //           - If fit < pbest[i]: write pbest[i] = fit, copy positions slice -> pbest_pos.
 //           - Fuses eval + pbest update (one pass over particle state).
 //
-__global__ kernel_eval_and_pbest(
+__global__ void kernel_eval_and_pbest(
     const float* positions, //[D*N]
     float* fitness, //[N]
     float*  pbest_fit, //[N]
@@ -57,13 +58,13 @@ __global__ kernel_eval_and_pbest(
     //1: evaluate fitness for current particle
     //a: stage fitness array to pass into f as _contiguous_ array
     
-    float pos_local[MAX_D]; //define local array
+    float pos_local[128]; //define local array
     //stage:
     for (int d = 0; d < D; d++)
         pos_local[d] = positions[tid + d * N];
 
     //b: eval fitness
-    float fit = f(&pos_local, D);
+    float fit = f(pos_local, D);
     fitness[tid]=fit;
 
     //2: conditionally update
@@ -106,52 +107,48 @@ __global__ void kernel_draw_rng(
 //           - v = w*v + c1*r1*(pbest_pos - pos) + c2*r2*(gbest_pos - pos)
 //           - pos = clamp(pos + v, bound_lo, bound_hi)
 //           - gbest_pos[d] is broadcast — load via __ldg or stage in shared mem.
-__global__ kernel_update(
-    float*       __restrict__ positions, float* __restrict__ velocities,
-    const float* __restrict__ pbest_pos, const float* __restrict__ gbest_pos,
-    const float* __restrict__ r1,        // [N] — pre-drawn
-    const float* __restrict__ r2,        // [N] — pre-drawn
+__global__ void kernel_update(
+    float*       __restrict__ positions,
+    float*       __restrict__ velocities,
+    const float* __restrict__ pbest_pos,
+    const float* __restrict__ gbest_pos,
+    curandState* __restrict__ rng_states,
     float w, float c1, float c2,
     float bound_lo, float bound_hi,
-    int N, int D
-){
-    /*
-    map thread ID to particle, block idx to dimension
-    ensures coalesced loads! Specifically,
-    SoA layout [d * N + particle], threads in the same warp have consecutive particle values and the same d
-    */
-    int part = blockIdx.x * blockDim.x + threadIdx.x;  // which particle
-    int dim = blockIdx.y; // which dimension
+    int N, int D) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int n_entries = N * D;
+    if (idx >= n_entries) return;
 
-    if (particle >= N || d >= D) return; //guard
+    int particle = idx % N;
+    int dim = idx / N;
+    int offset = dim * N + particle;
 
-    int idx = dim*N + part; //actual index
+    curandState local_state = rng_states[offset];
+    float r1 = curand_uniform(&local_state);
+    float r2 = curand_uniform(&local_state);
 
-    // r1, r2 drawn once per particle — only dim==0 thread advances the state,
-    // then broadcasts to all dims of this particle via shared memory
-    // Simple alternative: draw per (particle, dim) — statistically fine for PSO
-    // and avoids cross-dim coordination. We use that here:
+    float pos = positions[offset];
+    float vel = velocities[offset];
+    float pb = pbest_pos[offset];
+    float gb = gbest_pos[dim];
 
-    float r1_val = r1[part];   // same value for all dims of this particle
-    float r2_val = r2[part];
-
-    // Load current state
-    float pos  = positions[idx];
-    float vel  = velocities[idx];
-    float pb   = pbest_pos[idx];
-    float gb   = gbest_pos[dim];   // broadcast: same for all particles at this dim
-
-    // PSO velocity update
-    float new_vel = w  * vel
+    float new_vel = w * vel
                   + c1 * r1 * (pb - pos)
                   + c2 * r2 * (gb - pos);
 
-    // Position update + clamp to bounds
     float new_pos = pos + new_vel;
-    new_pos = fmaxf(bound_lo, fminf(bound_hi, new_pos));
+    if (new_pos < bound_lo) {
+        new_pos = bound_lo;
+        new_vel = 0.0f;
+    } else if (new_pos > bound_hi) {
+        new_pos = bound_hi;
+        new_vel = 0.0f;
+    }
 
-    velocities[idx] = new_vel;
-    positions[idx]  = new_pos;
+    velocities[offset] = new_vel;
+    positions[offset] = new_pos;
+    rng_states[offset] = local_state;
 }
 /*
 Kernel structure:

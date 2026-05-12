@@ -12,10 +12,58 @@
 //   the report's tables/figures come straight from the CSV (pandas/matplotlib).
 
 #include <cstdio>
+#include <cstdlib>
 #include <cuda_runtime.h>
 
 #include "cuda_check.cuh"
+#include "evals.cuh"
 #include "pso.h"
+
+static void run_copy_gbest_pos_smoke_test(void) {
+    constexpr int N = 4;
+    constexpr int D = 3;
+    constexpr int best_idx = 2;
+
+    float h_pbest_pos[N * D];
+    for (int d = 0; d < D; ++d) {
+        for (int p = 0; p < N; ++p) {
+            h_pbest_pos[d * N + p] = 100.0f * d + static_cast<float>(p);
+        }
+    }
+
+    ReduceResult h_reduce{};
+    h_reduce.val = -1.0f;
+    h_reduce.idx = best_idx;
+
+    float* d_pbest_pos = nullptr;
+    float* d_gbest_pos = nullptr;
+    ReduceResult* d_reduce = nullptr;
+    CUDA_CHECK(cudaMalloc(&d_pbest_pos, sizeof(h_pbest_pos)));
+    CUDA_CHECK(cudaMalloc(&d_gbest_pos, sizeof(float) * D));
+    CUDA_CHECK(cudaMalloc(&d_reduce, sizeof(ReduceResult)));
+    CUDA_CHECK(cudaMemcpy(d_pbest_pos, h_pbest_pos, sizeof(h_pbest_pos), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_reduce, &h_reduce, sizeof(ReduceResult), cudaMemcpyHostToDevice));
+
+    kernel_copy_gbest_pos<<<1, D>>>(d_pbest_pos, d_gbest_pos, d_reduce, N, D);
+    CUDA_CHECK(cudaGetLastError());
+
+    float h_gbest_pos[D] = {};
+    CUDA_CHECK(cudaMemcpy(h_gbest_pos, d_gbest_pos, sizeof(h_gbest_pos), cudaMemcpyDeviceToHost));
+
+    for (int d = 0; d < D; ++d) {
+        float expected = h_pbest_pos[d * N + best_idx];
+        if (h_gbest_pos[d] != expected) {
+            std::fprintf(stderr, "kernel_copy_gbest_pos smoke test failed at d=%d: got %g expected %g\n",
+                d, h_gbest_pos[d], expected);
+            std::exit(EXIT_FAILURE);
+        }
+    }
+
+    CUDA_CHECK(cudaFree(d_pbest_pos));
+    CUDA_CHECK(cudaFree(d_gbest_pos));
+    CUDA_CHECK(cudaFree(d_reduce));
+    std::printf("kernel_copy_gbest_pos smoke test passed.\n");
+}
 
 int main(void) {
     int device_count = 0;
@@ -30,10 +78,12 @@ int main(void) {
     CUDA_CHECK(cudaGetDeviceProperties(&prop, 0));
     std::printf("Using CUDA device 0: %s\n", prop.name);
 
+    run_copy_gbest_pos_smoke_test();
+
     PSOConfig cfg = {
         .n_particles = 1024,
         .n_dims      = 30,
-        .max_iters   = 500,
+        .max_iters   = 100,
         .w           = 0.7f,
         .c1          = 1.5f,
         .c2          = 1.5f,
@@ -43,26 +93,15 @@ int main(void) {
         .topology    = nullptr,
     };
 
-    swarm s{};
-    CUDA_CHECK(swarm_alloc(&s, &cfg));
-    CUDA_CHECK(swarm_init(&s, &cfg, 1234ULL));
+    EvaluatorFn evaluator = nullptr;
+    CUDA_CHECK(cudaMemcpyFromSymbol(&evaluator, d_rastrigin_ptr, sizeof(EvaluatorFn)));
+    PSOResult result = pso_run(&cfg, evaluator, 1, nullptr);
 
-    float first_position = 0.0f;
-    float first_pbest = 0.0f;
-    CUDA_CHECK(cudaMemcpy(&first_position, s.positions, sizeof(float), cudaMemcpyDeviceToHost));
-    CUDA_CHECK(cudaMemcpy(&first_pbest, s.pbest, sizeof(float), cudaMemcpyDeviceToHost));
-    CUDA_CHECK(cudaDeviceSynchronize());
+    std::printf("PSO run completed for Rastrigin N=%d D=%d iters=%d.\n",
+        cfg.n_particles, cfg.n_dims, cfg.max_iters);
+    std::printf("best_value = %.8g\n", result.best_value);
+    std::printf("best_position[0] = %.6f\n", result.best_position[0]);
 
-    std::printf("Smoke sample: positions[dim=0, particle=0] = %.6f, pbest[0] = %g\n",
-        first_position, first_pbest);
-    std::printf("Host gbest initialized: value = %g, idx = %d\n", s.gbest_val, s.gbest_idx);
-
-    CUDA_CHECK(swarm_free(&s));
-    // Smoke-test/debug sync: confirms all CUDA work, including cleanup-adjacent
-    // runtime bookkeeping, has completed before reporting success.
-    CUDA_CHECK(cudaDeviceSynchronize());
-
-    std::printf("PSO swarm alloc/init/free smoke test passed for N=%d, D=%d.\n",
-        cfg.n_particles, cfg.n_dims);
+    pso_result_free(&result);
     return 0;
 }
