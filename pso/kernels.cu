@@ -83,16 +83,24 @@ __global__ void kernel_draw_rng(
     curandState* __restrict__ states,
     float*       __restrict__ r1,
     float*       __restrict__ r2,
-    int N)
+    int N, int D)
 {
     /*
-    NEEDED FOR UPDATE - pregenerate random vectors (r1 holds N random numbers)
-    pass in to update kernel to avoid race conditions to rng
+    One thread per particle. Each thread draws D pairs of (r1, r2) for its
+    particle using a single curandState, then writes the state back. Pulling
+    the state into a register and looping over D inside the thread keeps the
+    per-iter RNG state traffic at N reads + N writes (×48B each) instead of
+    N*D, which was dominating the bandwidth counter.
     */
-    int part = blockIdx.x * blockDim.x + threadIdx.x;
-    if (part >= N) return;
-    r1[part] = curand_uniform(&states[part]);
-    r2[part] = curand_uniform(&states[part]);
+    int p = blockIdx.x * blockDim.x + threadIdx.x;
+    if (p >= N) return;
+    curandState local = states[p];
+    for (int d = 0; d < D; ++d) {
+        int offset = d * N + p;
+        r1[offset] = curand_uniform(&local);
+        r2[offset] = curand_uniform(&local);
+    }
+    states[p] = local;
 }
 // __global__ kernel_update(
 //               float* positions, float* velocities,
@@ -111,8 +119,9 @@ __global__ void kernel_update(
     float*       __restrict__ positions,
     float*       __restrict__ velocities,
     const float* __restrict__ pbest_pos,
-    const float* __restrict__ gbest_pos,
-    curandState* __restrict__ rng_states,
+    const float* __restrict__ r1,
+    const float* __restrict__ r2,
+    const int*   __restrict__ d_gbest_idx,
     float w, float c1, float c2,
     float bound_lo, float bound_hi,
     int N, int D) {
@@ -129,19 +138,21 @@ __global__ void kernel_update(
     int dim = idx / N;
     int offset = dim * N + particle; //idx in memory
 
-    curandState local_state = rng_states[offset];
-    float r1 = curand_uniform(&local_state);
-    float r2 = curand_uniform(&local_state);
+    // gbest_idx is broadcast across the warp; pbest_pos[dim*N + gidx] gives
+    // the global-best particle's pbest for this dim (which IS the gbest pos).
+    int gidx = *d_gbest_idx;
+    float gb = pbest_pos[dim * N + gidx];
 
     float pos = positions[offset];
     float vel = velocities[offset];
     float pb = pbest_pos[offset];
-    float gb = gbest_pos[dim];
+    float r1v = r1[offset];
+    float r2v = r2[offset];
 
     //update step
     float new_vel = w * vel
-                  + c1 * r1 * (pb - pos)
-                  + c2 * r2 * (gb - pos);
+                  + c1 * r1v * (pb - pos)
+                  + c2 * r2v * (gb - pos);
 
     float new_pos = pos + new_vel;
 
@@ -156,33 +167,28 @@ __global__ void kernel_update(
     //write
     velocities[offset] = new_vel;
     positions[offset] = new_pos;
-    rng_states[offset] = local_state;
 }
 
 __global__ void kernel_commit_gbest(
     const ReduceResult* __restrict__ d_reduce_out,
-    const float*        __restrict__ pbest_pos,   // [N * D]
-    float*                           gbest_pos,   // [D]
     float*                           d_gbest_val,
     int*                             d_gbest_idx,
     float*                           d_gbest_history,  // [max_iters]
     int   iter,
-    int N, int D) {
+    int N) {
         /*
-        Takes argmin result as input (d_reduce_out), local best positions and global best pos,
-        global best value and index
-        Conditionally global best value and index after comparison
+        Scalar-only commit: read this iter's argmin, conditionally update
+        d_gbest_val/d_gbest_idx, record d_gbest_history[iter]. The matching
+        gbest_pos[D] gather is done once after the main loop — kernel_update
+        reads pbest_pos[dim*N + *d_gbest_idx] directly so no per-iter D-wide
+        copy is needed for correctness.
         */
-        if (blockIdx.x != 0 || threadIdx.x != 0) return; //guard for non (0,0) threads
-        int best_idx = d_reduce_out->idx; //
+        if (blockIdx.x != 0 || threadIdx.x != 0) return;
+        int best_idx = d_reduce_out->idx;
         float best_val = d_reduce_out->val;
         if (best_idx >= 0 && best_idx < N && best_val < *d_gbest_val) {
             *d_gbest_val = best_val;
             *d_gbest_idx = best_idx;
-            //write gbest_pos
-            for (int d = 0; d < D; ++d) {
-                gbest_pos[d] = pbest_pos[d*N + best_idx];
-            }
         }
         d_gbest_history[iter] = *d_gbest_val;
 }

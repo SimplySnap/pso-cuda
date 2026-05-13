@@ -69,31 +69,33 @@ void reduce_argmin(
     int           n_particles,
     cudaStream_t  stream);
 
-//update-kernel rng
+// Pregenerate two random buffers of size N*D each from N per-particle states.
+// Launched once per iter; update kernel then does zero RNG work.
 __global__ void kernel_draw_rng(
     curandState* __restrict__ states,
     float*       __restrict__ r1,
     float*       __restrict__ r2,
-    int N);
+    int N, int D);
 
-// Commit gbest — device-resident compare + conditional copy
+// Commit gbest — device-resident compare + scalar updates only. The per-D
+// position gather is deferred to a single post-loop kernel_gather_gbest_pos
+// call; the update kernel reads pbest_pos[dim*N + d_gbest_idx] directly.
 __global__ void kernel_commit_gbest(
     const ReduceResult* __restrict__ d_reduce_out,
-    const float*        __restrict__ pbest_pos,   // [N * D]
-    float*                           gbest_pos,   // [D]
     float*                           d_gbest_val,
     int*                             d_gbest_idx,
     float*                           d_gbest_history,  // [max_iters]
     int   iter,
-    int N, int D);
+    int N);
 
     // 5. Velocity + position update — one thread per (particle × dim)
 __global__ void kernel_update(
     float*       __restrict__ positions,   // [N * D]
     float*       __restrict__ velocities,  // [N * D]
     const float* __restrict__ pbest_pos,   // [N * D]
-    const float* __restrict__ gbest_pos,   // [D]
-    curandState* __restrict__ rng_states,
+    const float* __restrict__ r1,          // [N * D]
+    const float* __restrict__ r2,          // [N * D]
+    const int*   __restrict__ d_gbest_idx,
     float w, float c1, float c2,
     float bound_lo, float bound_hi,
     int N, int D);
