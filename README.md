@@ -5,7 +5,8 @@ Parallel Implementation of Particle Swarm Optimization on CUDA
 
 ## Project Structure
 
-```
+## Project Structure
+'''
 pso/
 ├── pso.h — PSOConfig, swarm, PSOResult, pso_run()
 ├── pso.cu — swarm lifecycle + main loop (calls kernels & reducer)
@@ -16,7 +17,14 @@ pso/
 evals/
 ├── evals.cuh
 └── evals.cu
-```
+src/
+├── main.cu — single-GPU entry point
+├── main_ring.cu — MPI ring-topology entry point
+└── main_fc.cu — MPI fully-connected entry point
+mpi/
+├── mpi_island.h — IslandSyncData, sync callback declarations
+└── mpi_island.cu — island_gbest_exchange, island_migrate_ring/fc
+'''
 
 ---
 
@@ -109,14 +117,32 @@ Custom evaluators must be parallelized at the per-dimension level to avoid wasti
 
 ## Build
 
-```bash
-mkdir build && cd build
-cmake ..
-make -j$(nproc)
-./pso_cuda
-```
+Requires CUDA 11.0+, an MPI installation (OpenMPI or MPICH), and a Volta or newer GPU.
 
-Requires CUDA 11.0+, CMake 3.18+, and a Volta or newer GPU (warp shuffle support).
+```bash
+# load toolchain on a SLURM cluster first:
+# module load cuda gcc openmpi
+
+# single-GPU build (no MPI required)
+make
+./build/pso_cuda --evaluator rastrigin --N 1024 --D 30 --iters 100
+
+# MPI island builds
+make mpi
+
+# run ring topology (4 islands)
+mpirun -np 4 ./build/pso_ring --evaluator rastrigin --N 1024 --D 30 --iters 100 --sync 10 --migrate 5
+
+# run fully-connected topology (4 islands)
+mpirun -np 4 ./build/pso_fc   --evaluator rastrigin --N 1024 --D 30 --iters 100 --sync 10 --migrate 5
+
+# individual targets
+make ring          # build pso_ring only
+make fc            # build pso_fc only
+make debug         # debug build (all targets)
+make clean         # remove build/
+make info          # print resolved paths and flags
+```
 
 ---
 

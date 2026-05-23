@@ -403,20 +403,18 @@ int main(int argc, char** argv) {
     run_copy_gbest_pos_smoke_test();
 
     PSOConfig cfg = {
-        .n_particles   = args.n_particles,
-        .n_dims        = args.n_dims,
-        .max_iters     = args.max_iters,
-        .w             = 0.7f,
-        .c1            = 1.5f,
-        .c2            = 1.5f,
-        .bound_lo      = -5.12f,
-        .bound_hi      =  5.12f,
-        .n_islands     = 1,
-        .topology      = nullptr,
-        .seed          = args.seed,
-        .sync_interval = 0,       //disabled in single-GPU mode
-        .on_sync       = nullptr,
-        .on_sync_data  = nullptr,
+        .n_particles = args.n_particles,
+        .n_dims      = args.n_dims,
+        .max_iters   = args.max_iters,
+        .w           = 0.7f,
+        .c1          = 1.5f,
+        .c2          = 1.5f,
+        .bound_lo    = -5.12f,
+        .bound_hi    =  5.12f,
+        .n_islands   = 1,
+        .topology    = nullptr,
+        .seed        = args.seed
+        
     };
 
     EvaluatorFn evaluator = resolve_evaluator(args.evaluator);
