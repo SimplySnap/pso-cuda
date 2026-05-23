@@ -54,6 +54,16 @@ __global__ void kernel_copy_gbest_pos(
   gbest_pos[d] = pbest_pos[d * N + best_idx];
 }
 
+__global__ void kernel_gather_gbest_pos(
+              const float* pbest_pos, float* gbest_pos,
+            const int* d_idx, int N, int D) {
+  int d = blockIdx.x * blockDim.x + threadIdx.x;
+  if (d >= D) return;
+  int idx = *d_idx;
+  if (idx < 0 || idx >= N) return;
+  gbest_pos[d] = pbest_pos[d * N + idx];
+}
+
 size_t reduce_argmin_cub_workspace(int N) {
   /*
   Helper function gives us number of bytes needed for argmin_cub temp buffer

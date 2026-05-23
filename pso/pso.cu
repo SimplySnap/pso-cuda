@@ -130,11 +130,13 @@ cudaError_t swarm_alloc(swarm* s, const PSOConfig* cfg) {
     CUDA_CHECK(cudaMalloc(&s->d_gbest_idx, sizeof(int)));
     CUDA_CHECK(cudaMalloc(&s->d_reduce_out, sizeof(ReduceResult)));
     CUDA_CHECK(cudaMalloc(&s->d_gbest_history, sizeof(float) * cfg->max_iters));
-    //   Option 1- One state per thread in kernel_update (most flexible, max memory). 
-    //   Let's go with Option 2:  One state per particle, with serial draws in update (less memory, less parallelism).
-    //   This can be adjusted later if memory usage is a concern.
-    int n_rng_states = cfg->n_particles * cfg->n_dims; // or cfg->n_particles if using one state per particle
-    CUDA_CHECK(cudaMalloc(&s->d_rng_states, sizeof(curandState) * n_rng_states));
+    // One curandState per particle (~48B each). Per-iter draws for the update
+    // kernel are pregenerated into d_r1/d_r2 via kernel_draw_rng so the only
+    // RNG-state traffic per iter is N reads + N writes instead of N*D.
+    CUDA_CHECK(cudaMalloc(&s->d_rng_states, sizeof(curandState) * cfg->n_particles));
+    size_t r_bytes = sizeof(float) * cfg->n_particles * cfg->n_dims;
+    CUDA_CHECK(cudaMalloc(&s->d_r1, r_bytes));
+    CUDA_CHECK(cudaMalloc(&s->d_r2, r_bytes));
 
     // CUB reduction needs some temp storage for intermediate results. Query the size and allocate it here so we can reuse it across iterations.
     s->reduce_tmp_bytes = reduce_argmin_cub_workspace(cfg->n_particles);
@@ -156,6 +158,8 @@ cudaError_t swarm_free(swarm* s) {
     CUDA_CHECK(cudaFree(s->d_reduce_out)); s->d_reduce_out = nullptr;
     CUDA_CHECK(cudaFree(s->d_gbest_history)); s->d_gbest_history = nullptr;
     CUDA_CHECK(cudaFree(s->d_rng_states)); s->d_rng_states = nullptr;
+    CUDA_CHECK(cudaFree(s->d_r1)); s->d_r1 = nullptr;
+    CUDA_CHECK(cudaFree(s->d_r2)); s->d_r2 = nullptr;
     CUDA_CHECK(cudaFree(s->reduce_tmp)); s->reduce_tmp = nullptr;
     return cudaSuccess;
 }
@@ -164,10 +168,9 @@ cudaError_t swarm_init(swarm* s, const PSOConfig* cfg) {
     // IMPORTANT: Ensure the first
     //            eval_and_pbest pass uses `<` against pbest=+INF (always true) and
     //            unconditionally copies positions->pbest_pos on that first hit.
-    int n_rng_states = cfg->n_particles * cfg->n_dims; // or cfg->n_particles if using one state per particle
     dim3 block_rng(256);
-    dim3 grid_rng((n_rng_states + block_rng.x - 1) / block_rng.x);
-    kernel_curand_init<<<grid_rng, block_rng>>>(s->d_rng_states, cfg->seed, n_rng_states);
+    dim3 grid_rng((cfg->n_particles + block_rng.x - 1) / block_rng.x);
+    kernel_curand_init<<<grid_rng, block_rng>>>(s->d_rng_states, cfg->seed, cfg->n_particles);
     CUDA_CHECK(cudaGetLastError());
     // Smoke-test/debug sync: catches runtime failures inside the RNG init kernel
     // at the exact lifecycle stage where they happen. Later PSO iterations should
@@ -183,9 +186,10 @@ cudaError_t swarm_init(swarm* s, const PSOConfig* cfg) {
         sizeof(int), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemset(s->gbest_pos, 0, sizeof(float) * cfg->n_dims));
 
-    int n_entries = cfg->n_particles * cfg->n_dims;
+    // One thread per particle: per-particle curandState means a single thread
+    // owns the state and walks all D dims sequentially to avoid races.
     dim3 block_init(256);
-    dim3 grid_init((n_entries + block_init.x - 1) / block_init.x);
+    dim3 grid_init((cfg->n_particles + block_init.x - 1) / block_init.x);
     kernel_swarm_init<<<grid_init, block_init>>>(
         s->positions, s->velocities, s->pbest_pos, s->pbest, s->fitness,
         s->d_rng_states, cfg->bound_lo, cfg->bound_hi,
@@ -207,41 +211,35 @@ __global__ void kernel_swarm_init(
     float bound_lo, float bound_hi,
     int n_particles, int n_dims) {
     /*
-    Fills positions, velocities, offsets. One thread per particle/dim entry
+    One thread per particle. Each thread owns its particle's curandState and
+    fills D entries of positions/velocities/pbest_pos sequentially, so no
+    two threads ever touch the same RNG state.
     */
+    int p = blockIdx.x * blockDim.x + threadIdx.x;
+    if (p >= n_particles) return;
 
-    //indices
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    int n_entries = n_particles * n_dims;
-    if (idx >= n_entries) return;
-
-    // SoA layout: each dimension owns one contiguous stripe of N particles.
-    // This makes positions[dim][particle] adjacent across particle IDs.
-    int particle = idx % n_particles;
-    int dim = idx / n_particles;
-    int offset = dim * n_particles + particle;
     float span = bound_hi - bound_lo;
+    // Initial velocity scaled to a small fraction of the search span. Drawing
+    // v ~ U[-span, span] sent every particle past the bounds on iter 1, where
+    // the clamp zeroed its velocity and collapsed swarm diversity. 0.1*span
+    // is a common PSO default.
+    const float init_vel_scale = 0.1f;
+    curandState local_state = d_states[p];
 
-    // One RNG state per (particle, dim) entry. This matches the later planned
-    // update kernel where each thread updates one position/velocity element.
-    curandState local_state = d_states[idx];
-    float rand_pos = bound_lo + curand_uniform(&local_state) * span;
-    float rand_vel = (curand_uniform(&local_state) * 2.0f - 1.0f) * span;
-
-    // Seed current position, velocity, and personal-best position consistently.
-    // Fitness values stay +INF until the first evaluator kernel runs.
-    positions[offset] = rand_pos;
-    velocities[offset] = rand_vel;
-    pbest_pos[offset] = rand_pos;
-
-    // Only one dimension thread should initialize each particle-level scalar.
-    if (dim == 0) {
-        pbest[particle] = +CUDART_INF_F;
-        fitness[particle] = +CUDART_INF_F;
+    // SoA layout: positions[dim*N + particle]. Walk D dims for this particle.
+    for (int d = 0; d < n_dims; ++d) {
+        int offset = d * n_particles + p;
+        float rand_pos = bound_lo + curand_uniform(&local_state) * span;
+        float rand_vel = (curand_uniform(&local_state) * 2.0f - 1.0f) * span * init_vel_scale;
+        positions[offset] = rand_pos;
+        velocities[offset] = rand_vel;
+        pbest_pos[offset] = rand_pos;
     }
 
-    // Save the advanced RNG state so future kernels continue the sequence.
-    d_states[idx] = local_state;
+    pbest[p] = +CUDART_INF_F;
+    fitness[p] = +CUDART_INF_F;
+
+    d_states[p] = local_state;
 }
 
 PSOResult pso_run(const PSOConfig* cfg, EvaluatorFn evaluator, int islands, char* topology) {
@@ -299,24 +297,45 @@ PSOResult pso_run(const PSOConfig* cfg, EvaluatorFn evaluator, int islands, char
             s.reduce_tmp, s.reduce_tmp_bytes,
             s.d_reduce_out, 0);
         
-        //write to gbest if better
+        // Scalar-only commit: updates d_gbest_val/d_gbest_idx and history.
+        // The per-D gbest_pos copy is deferred to a single post-loop gather.
         kernel_commit_gbest<<<1, 1>>>(
-            s.d_reduce_out, s.pbest_pos, s.gbest_pos,
+            s.d_reduce_out,
             s.d_gbest_val, s.d_gbest_idx, s.d_gbest_history,
-            iter, cfg->n_particles, cfg->n_dims);
+            iter, cfg->n_particles);
         CUDA_CHECK(cudaGetLastError());
         CUDA_CHECK(cudaEventRecord(reduce_done[iter], 0));
 
-        // Update positions and velocities.
+        // Pregenerate r1/r2 from N per-particle states, then the update kernel
+        // reads them and pbest_pos[dim*N + *d_gbest_idx] for the gbest term.
+        dim3 particle_block_rng(256);
+        dim3 particle_grid_rng((cfg->n_particles + particle_block_rng.x - 1) / particle_block_rng.x);
+        kernel_draw_rng<<<particle_grid_rng, particle_block_rng>>>(
+            s.d_rng_states, s.d_r1, s.d_r2,
+            cfg->n_particles, cfg->n_dims);
+        CUDA_CHECK(cudaGetLastError());
+
         kernel_update<<<entry_grid, entry_block>>>(
-            s.positions, s.velocities, s.pbest_pos, s.gbest_pos,
-            s.d_rng_states, cfg->w, cfg->c1, cfg->c2,
+            s.positions, s.velocities, s.pbest_pos,
+            s.d_r1, s.d_r2, s.d_gbest_idx,
+            cfg->w, cfg->c1, cfg->c2,
             cfg->bound_lo, cfg->bound_hi,
             cfg->n_particles, cfg->n_dims);
         CUDA_CHECK(cudaGetLastError());
         CUDA_CHECK(cudaEventRecord(update_done[iter], 0));
     }
     CUDA_CHECK(cudaEventSynchronize(update_done[cfg->max_iters - 1]));
+
+    // One-shot gather: now that the loop has converged on a final gbest_idx,
+    // fill gbest_pos[D] from pbest_pos for the host to read out.
+    {
+        dim3 gather_block(256);
+        dim3 gather_grid((cfg->n_dims + gather_block.x - 1) / gather_block.x);
+        kernel_gather_gbest_pos<<<gather_grid, gather_block>>>(
+            s.pbest_pos, s.gbest_pos, s.d_gbest_idx,
+            cfg->n_particles, cfg->n_dims);
+        CUDA_CHECK(cudaGetLastError());
+    }
 
     float eval_ms = 0.0f;
     float reduce_ms = 0.0f;

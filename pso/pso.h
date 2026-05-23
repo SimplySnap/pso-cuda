@@ -52,14 +52,13 @@ typedef struct {
     ReduceResult* d_reduce_out; // device ptr, single ReduceResult
 
     float* d_gbest_history; // device ptr, [max_iters], filled one entry/iter for convergence figure in progress report.
-    // curandState* d_rng_states;
-    //   Decide policy BEFORE swarm_alloc:
-    //     (a) one state per particle    -> N states, serial D draws in update
-    //     (b) one state per (particle,dim) -> N*D states, parallel draws
-    //   (a) is lighter on memory (XORWOW state ~48B); (b) matches the
-    //   warp-per-dim update kernel's thread layout 1:1. Recommend (b).
-    //
-    curandState* d_rng_states; // device ptr, one curandState per per (particle, dim).
+    // One curandState per particle. Per-iter randoms for the update kernel are
+    // pregenerated into d_r1/d_r2 (N*D each) by kernel_draw_rng so the update
+    // kernel itself does no RNG work and the per-iter RNG state traffic is N
+    // instead of N*D.
+    curandState* d_rng_states; // device ptr, [N]
+    float* d_r1;               // device ptr, [N*D] — pregenerated each iter
+    float* d_r2;               // device ptr, [N*D] — pregenerated each iter
 
 } swarm;
 
