@@ -7,10 +7,12 @@ Parallel Implementation of Particle Swarm Optimization on CUDA
 
 ```
 pso/
-├── pso.h          — PSOConfig, swarm, PSOResult, pso_run()
-├── pso.cu         — swarm lifecycle + main loop (calls kernels & reducer)
-├── kernels.cuh    — __global__ kernel declarations (eval_pbest, update) + reduction
-├── kernels.cu     — kernel implementations (eval, pbest, updating, reduction)
+├── pso.h — PSOConfig, swarm, PSOResult, pso_run()
+├── pso.cu — swarm lifecycle + main loop (calls kernels & reducer)
+├── kernels.cuh — _global_ kernel declarations (eval_pbest, update) + reduction
+├── kernels.cu — kernel implementations (eval, pbest, updating, reduction)
+├── reduce.cuh — ReduceResult, reduce_argmin_cub declaration
+├── reduce.cu — CUB-based argmin reduction + gbest commit/copy kernels
 evals/
 ├── evals.cuh
 └── evals.cu
@@ -22,12 +24,11 @@ evals/
 
 ### Thread/Warp Mapping
 
-This implementation uses a **warp-per-dimension, thread-per-particle** mapping (Idea 2):
+This implementation uses a **flat thread-per-(particle × dimension) mapping**:
 
-- Each **thread block** covers a segment of the swarm — threads span particles within a dimension slice.
-- Each **warp** is responsible for a single dimension index across all particles in the block.
-- This satisfies **coalesced memory access** when using a Structure-of-Arrays (SoA) layout:
-  `position[dim][particle]` — threads in the same warp read the same dimension across contiguous particles.
+- Each **thread** is assigned a unique `(particle, dim)` pair via `idx = blockIdx.x * blockDim.x + threadIdx.x`, with `particle = idx % N` and `dim = idx / N`.
+- Thread blocks cover a contiguous flat range of `N × D` entries — there is no explicit per-block dimension assignment.
+- This satisfies **coalesced memory access** when using a Structure-of-Arrays (SoA) layout: `position[dim][particle]` — threads in the same warp share the same `dim` (consecutive `idx` values share `idx/N`) and read contiguous particle slots.
 
 This is preferred over a warp-per-particle mapping for high-dimensional problems, where dimension-level parallelism is the bottleneck.
 
@@ -48,50 +49,26 @@ This ensures that threads in a warp access contiguous memory addresses, maximizi
 
 ## Global Best (`gbest`) Strategy
 
-Naively letting all threads write to a single `gbest` causes write collisions and cache contention. This implementation uses a **two-level hierarchical reduction**:
+`gbest` is maintained as a **(fitness value, particle index)** pair stored in device memory. The update pipeline has two stages per iteration — no warp shuffles, shared-memory reductions, or atomic locks are involved.
 
-### Level 1 — Warp Shuffle Reduction (within a warp)
+### Stage 1 — CUB `DeviceReduce::ArgMin` over `pbest_fit[N]`
 
-Each thread holds its particle's pre-computed fitness value `f_i` and its particle index `i`. A butterfly reduction using `__shfl_down_sync` finds the warp's local argmin — carrying both the fitness value and index in lockstep:
-
-```cuda
-float my_fit = fitness[threadIdx.x];
-int   my_idx = threadIdx.x;
-
-for (int offset = warpSize / 2; offset > 0; offset >>= 1) {
-    float other_f = __shfl_down_sync(0xFFFFFFFF, my_fit, offset);
-    int   other_i = __shfl_down_sync(0xFFFFFFFF, my_idx, offset);
-    if (other_f < my_fit) {
-        my_fit = other_f;
-        my_idx = other_i;
-    }
-}
-// Lane 0 holds the warp-local best fitness and the index into the SoA position array
-```
-
-No re-evaluation of the objective function occurs here — only fitness comparisons on already-computed values.
-
-### Level 2 — Block Reduction (shared memory) + Single Atomic Write
-
-Warp winners (lane 0 of each warp) write their `(fitness, index)` pair to shared memory. A second pass reduces these into the single `block_best`. Then **one thread per block** attempts to update the true global `gbest` in global memory using `atomicCAS`:
+`reduce_argmin_cub` (in `reduce.cu`) wraps `cub::DeviceReduce::ArgMin` to find the particle index with the minimum personal-best fitness across all N particles:
 
 ```cuda
-// Only one thread per block writes to global gbest
-if (threadIdx.x == block_winner && block_fit < gbest_fit[0]) {
-    atomicCAS(&gbest_lock, 0, 1);  // acquire
-    if (block_fit < gbest_fit[0]) {
-        gbest_fit[0] = block_fit;
-        gbest_idx[0] = block_idx;
-    }
-    atomicExch(&gbest_lock, 0);    // release
-}
+cub::DeviceReduce::ArgMin(
+    tmp, tmp_bytes,
+    pbest_fit,                                               // input: float[N]
+    reinterpret_cast<cub::KeyValuePair<int,float>*>(d_out), // output: {idx, val}
+    N, stream);
 ```
 
-This reduces global write contention from **N_particles writers** to **N_blocks writers** per iteration.
+The temporary workspace is sized once at allocation time via the two-call CUB idiom (`reduce_argmin_cub_workspace`). `ReduceResult` is a `{int idx; float val;}` struct that is statically asserted to match `cub::KeyValuePair<int,float>` in memory layout.
 
-### Level 3 (optional) — Staging Array for Large Grids
+### Stage 2 — `kernel_commit_gbest` (scalar, single thread)
 
-When `N_blocks` is large, a follow-up reduction kernel reads one `block_best` per block from a staging array and reduces to the true `gbest` in a single thread — eliminating atomic contention entirely at the cost of one extra kernel launch per iteration.
+A single-thread kernel reads the CUB output and conditionally updates the running global best
+
 
 ---
 
@@ -107,13 +84,12 @@ Recommended starting value: `k = 5–10`. Set `k = 1` to disable (synchronous mo
 
 ---
 
-## Multi-GPU / Island Model (Future Work)
+## Multi-GPU / Island Model
 
-The block-level hierarchy extends naturally to a multi-GPU design:
+We also explore an island-model, where multiple GPUs run the algorithm, sharing their own swarm gbest periodically among the cluster. We use MPI to reduce and broadcast global bests.
 
 - Each GPU holds a **sub-swarm** in its own VRAM and maintains a local `gbest`.
-- Every `T` iterations, sub-swarm bests are communicated across GPUs (via NVLink or host) and a global best is broadcast.
-- Top-`m` particles can be migrated between sub-swarms to prevent premature convergence.
+- Every `T` iterations, sub-swarm bests are communicated across GPUs (via MPI) and a global best is broadcast.
 
 This mirrors the cooperative CPSO approach (van den Bergh & Engelbrecht, 2004) at the hardware level.
 

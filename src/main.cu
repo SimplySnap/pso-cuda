@@ -17,12 +17,12 @@
 #include <cuda_runtime.h>
 #include <sys/stat.h> 
 
-#include "cuda_check.cuh"
-#include "evals.cuh"
-#include "pso.h"
+#include "../pso/cuda_check.cuh" //new file structure
+#include "../evals/evals.cuh"
+#include "../pso/pso.h"
 
 struct CliArgs {
-    const char* evaluator;       // "rastrigin" | "levy" | "schaffer"
+    const char* evaluator;       // "rastrigin" | "levy" | "schaffer" etc
     int                n_particles;
     int                n_dims;
     int                max_iters;
@@ -52,9 +52,23 @@ static const char* kBenchCsvHeader =
     "impl,evaluator,N,D,iters,seed,eval_ms,reduce_ms,update_ms,total_ms,"
     "final_gbest,achieved_bw_gbps,achieved_gflops\n";
 
-// Append one row to `path`. Writes the header iff the file doesn't exist yet,
-// and fails loudly if an existing file has an old/incompatible schema.
 static void append_bench_row(const char* path, const BenchRow& r) {
+    /*
+    Appends one benchmark result row to a CSV file.
+    Writes the header if the file is new or empty, and aborts on schema mismatch.
+
+    Args:
+        path (const char*): Path to the output CSV file.
+        r    (const BenchRow&): Populated benchmark result struct.
+
+    Returns:
+        void. Calls exit(EXIT_FAILURE) on schema mismatch or file open failure.
+
+    Structure:
+        - stat() to detect missing/empty file -> need_header
+        - If file exists, fgets first line and strcmp against kBenchCsvHeader
+        - fopen "a", conditionally fputs header, fprintf row
+    */
     struct stat st{};
     bool need_header = (stat(path, &st) != 0 || st.st_size == 0);
 
@@ -99,6 +113,16 @@ static void append_bench_row(const char* path, const BenchRow& r) {
 }
 
 static double safe_rate(double work, float total_ms) {
+    /*
+    Converts raw work and elapsed time into a throughput rate (Giga-units/s).
+
+    Args:
+        work     (double): Total units of work (bytes or flops).
+        total_ms (float):  Elapsed time in milliseconds.
+
+    Returns:
+        double: Throughput in Giga-units per second, or 0.0 if total_ms <= 0.
+    */
     if (total_ms <= 0.0f) return 0.0;
     return work / (static_cast<double>(total_ms) * 1.0e6);
 }
@@ -112,6 +136,21 @@ static double safe_rate(double work, float total_ms) {
 // This intentionally skips CUB internals, cache effects, exact branch-dependent
 // pbest writes, and cuRAND state traffic so the report formula stays readable.
 static double estimate_loop_bytes(const PSOConfig& cfg) {
+    /*
+    Analytical estimate of dominant global-memory traffic for the timed iteration loop.
+    Intentionally skips CUB internals, cache effects, and cuRAND state traffic.
+
+    Args:
+        cfg (const PSOConfig&): PSO run configuration.
+
+    Returns:
+        double: Estimated total bytes across all iterations.
+
+    Structure:
+        - eval:   read positions + write/update pbest_pos  -> 2 * N*D * float
+        - reduce: read pbest values                        -> N * float
+        - update: read x/v/pbest/gbest, write x/v         -> 5 * N*D * float
+    */
     const double N = static_cast<double>(cfg.n_particles);
     const double D = static_cast<double>(cfg.n_dims);
     const double I = static_cast<double>(cfg.max_iters);
@@ -125,6 +164,17 @@ static double estimate_loop_bytes(const PSOConfig& cfg) {
 }
 
 static double estimate_loop_flops(const PSOConfig& cfg, const char* evaluator) {
+    /*
+    Coarse flop estimate for the timed iteration loop.
+    Transcendental functions are counted as part of the rough op count.
+
+    Args:
+        cfg       (const PSOConfig&): PSO run configuration.
+        evaluator (const char*):      Evaluator name string.
+
+    Returns:
+        double: Estimated total flops across all iterations.
+    */
     const double N = static_cast<double>(cfg.n_particles);
     const double D = static_cast<double>(cfg.n_dims);
     const double I = static_cast<double>(cfg.max_iters);
@@ -163,9 +213,16 @@ static void print_usage(const char* prog) {
         prog);
 }
 
-// Resolve evaluator name -> device function pointer via cudaMemcpyFromSymbol.
-// Returns nullptr if the name is unknown.
 static EvaluatorFn resolve_evaluator(const char* name) {
+    /*
+    Resolves an evaluator name string to a device function pointer via cudaMemcpyFromSymbol.
+
+    Args:
+        name (const char*): One of "rastrigin", "levy", "schaffer".
+
+    Returns:
+        EvaluatorFn: Device-callable function pointer, or nullptr if name is unknown.
+    */
     EvaluatorFn fn = nullptr;
     if (std::strcmp(name, "rastrigin") == 0) {
         CUDA_CHECK(cudaMemcpyFromSymbol(&fn, d_rastrigin_ptr, sizeof(fn)));
@@ -178,7 +235,17 @@ static EvaluatorFn resolve_evaluator(const char* name) {
 }
 
 static bool parse_args(int argc, char** argv, CliArgs* out) {
-    // defaults
+    /*
+    Parses argv into a CliArgs struct. Exits on bad input.
+
+    Args:
+        argc (int):      Argument count.
+        argv (char**):   Argument vector.
+        out  (CliArgs*): Output struct to populate.
+
+    Returns:
+        bool: true on success, false if a required value is missing or invalid.
+    */
     out->evaluator   = "rastrigin";
     out->n_particles = 1024;
     out->n_dims      = 30;
@@ -235,6 +302,18 @@ static bool parse_args(int argc, char** argv, CliArgs* out) {
 }
 
 static void run_copy_gbest_pos_smoke_test(void) {
+    /*
+    Smoke test for kernel_copy_gbest_pos. Verifies that the kernel correctly
+    gathers the winning particle's position into gbest_pos for a known best_idx.
+
+    Args: none
+    Returns: void. Calls exit(EXIT_FAILURE) on any mismatch.
+
+    Structure:
+        - Build small N=4, D=3 pbest_pos array on host with known pattern
+        - Copy to device, set best_idx=2, launch kernel, copy result back
+        - Assert gbest_pos[d] == pbest_pos[d*N + best_idx] for all d
+    */
     constexpr int N = 4;
     constexpr int D = 3;
     constexpr int best_idx = 2;
@@ -280,7 +359,29 @@ static void run_copy_gbest_pos_smoke_test(void) {
     std::printf("kernel_copy_gbest_pos smoke test passed.\n");
 }
 
+//MPI - nodes use Allreduce with 'max' of gbest_val to periodically sync gbest
+
+
 int main(int argc, char** argv) {
+    /*
+    Single-GPU PSO entry point. Parses CLI args, runs pso_run(), prints results,
+    optionally writes bench CSV and gbest history file.
+
+    Args:
+        argc (int):    Argument count.
+        argv (char**): Argument vector.
+
+    Returns:
+        int: 0 on success, 1 on error.
+
+    Structure:
+        - parse_args -> CliArgs
+        - cudaSetDevice(0), print device name
+        - run_copy_gbest_pos_smoke_test()
+        - build PSOConfig, resolve_evaluator, pso_run()
+        - print results, optionally append_bench_row, dump history
+        - pso_result_free()
+    */
     CliArgs args;
     if (!parse_args(argc, argv, &args)) {
         print_usage(argv[0]);
