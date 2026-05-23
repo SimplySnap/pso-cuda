@@ -284,21 +284,18 @@ PSOResult pso_run(const PSOConfig* cfg, EvaluatorFn evaluator, int islands, char
     //------------------MAIN ITERATION LOOP------------------
     for (int iter = 0; iter < cfg->max_iters; ++iter) {
         CUDA_CHECK(cudaEventRecord(iter_start[iter], 0));
-        // Evaluate current position and compare with pbest.
+
         kernel_eval_and_pbest<<<particle_grid, particle_block>>>(
             s.positions, s.fitness, s.pbest, s.pbest_pos,
             evaluator, cfg->n_particles, cfg->n_dims);
         CUDA_CHECK(cudaGetLastError());
         CUDA_CHECK(cudaEventRecord(eval_done[iter], 0));
 
-        // Reduce pbest and commit gbest if the reduced result improves it.
         reduce_argmin_cub(
             s.pbest, cfg->n_particles,
             s.reduce_tmp, s.reduce_tmp_bytes,
             s.d_reduce_out, 0);
-        
-        // Scalar-only commit: updates d_gbest_val/d_gbest_idx and history.
-        // The per-D gbest_pos copy is deferred to a single post-loop gather.
+
         kernel_commit_gbest<<<1, 1>>>(
             s.d_reduce_out,
             s.d_gbest_val, s.d_gbest_idx, s.d_gbest_history,
@@ -306,8 +303,6 @@ PSOResult pso_run(const PSOConfig* cfg, EvaluatorFn evaluator, int islands, char
         CUDA_CHECK(cudaGetLastError());
         CUDA_CHECK(cudaEventRecord(reduce_done[iter], 0));
 
-        // Pregenerate r1/r2 from N per-particle states, then the update kernel
-        // reads them and pbest_pos[dim*N + *d_gbest_idx] for the gbest term.
         dim3 particle_block_rng(256);
         dim3 particle_grid_rng((cfg->n_particles + particle_block_rng.x - 1) / particle_block_rng.x);
         kernel_draw_rng<<<particle_grid_rng, particle_block_rng>>>(
@@ -323,6 +318,23 @@ PSOResult pso_run(const PSOConfig* cfg, EvaluatorFn evaluator, int islands, char
             cfg->n_particles, cfg->n_dims);
         CUDA_CHECK(cudaGetLastError());
         CUDA_CHECK(cudaEventRecord(update_done[iter], 0));
+
+        //fire sync callback if interval is set and this iter lands on it
+        if (cfg->on_sync != nullptr
+                && cfg->sync_interval > 0
+                && (iter + 1) % cfg->sync_interval == 0) {
+            //device must be caught up before the MPI layer touches device memory
+            CUDA_CHECK(cudaDeviceSynchronize());
+            IslandState island_state = {
+                .d_gbest_val = s.d_gbest_val,
+                .d_gbest_idx = s.d_gbest_idx,
+                .d_pbest_pos = s.pbest_pos,
+                .d_pbest_fit = s.pbest,
+                .N           = cfg->n_particles,
+                .D           = cfg->n_dims,
+            };
+            cfg->on_sync(&island_state, cfg->on_sync_data);
+        }
     }
     CUDA_CHECK(cudaEventSynchronize(update_done[cfg->max_iters - 1]));
 

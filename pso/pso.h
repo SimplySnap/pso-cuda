@@ -14,6 +14,43 @@
 typedef float (*EvaluatorFn)(const float* position, int n_dim);
 #endif
 
+/**
+ * @brief Snapshot of one island's device-resident gbest state, passed to
+ *        SyncCallback every sync_interval iterations.
+ *
+ * @param d_gbest_val  Device pointer to the scalar best fitness (float).
+ * @param d_gbest_idx  Device pointer to the best particle index (int).
+ * @param d_pbest_pos  Device pointer to pbest_pos[D*N] SoA array.
+ * @param d_pbest_fit  Device pointer to pbest_fit[N] array.
+ * @param N            Swarm size.
+ * @param D            Number of dimensions.
+ *
+ * @Structure
+ *   Plain data struct — no ownership. All device pointers are borrowed from
+ *   the swarm struct inside pso_run() and are valid only during the callback.
+ */
+typedef struct {
+    float* d_gbest_val;
+    int*   d_gbest_idx;
+    float* d_pbest_pos;
+    float* d_pbest_fit;
+    int    N;
+    int    D;
+} IslandState;
+
+/**
+ * @brief Callback invoked by pso_run() every sync_interval iterations.
+ *
+ * @param state      Pointer to the current island's device state snapshot.
+ * @param user_data  Opaque pointer forwarded from PSOConfig.on_sync_data.
+ *
+ * @Structure
+ *   The callback owns the synchronization logic (MPI exchange, migration, etc).
+ *   It may read/write device memory via the pointers in state.
+ *   pso_run() resumes immediately after the callback returns.
+ */
+typedef void (*SyncCallback)(IslandState* state, void* user_data);
+
 /*Structures: config, best soln, particle*/
 typedef struct {
     int   n_particles;   // swarm size
@@ -28,38 +65,33 @@ typedef struct {
     int n_islands;       // number of islands (and thus gpu clusters)
     char* topology;      // string topology
     unsigned long long seed; // RNG seed for reproducibility (optional, can be zero)
+
+    //sync callback — null in single-GPU mode, set by MPI mains
+    int          sync_interval; //call on_sync every this many iters (0 = disabled)
+    SyncCallback on_sync;       //nullable
+    void*        on_sync_data;  //forwarded to on_sync as user_data
+
 } PSOConfig;
 
-//SofA format - coalescing. Downside - no swarm particle 'object'
+//SoA format — coalescing. Downside: no swarm particle 'object'
 typedef struct {
-    float* positions;   // [n_particles * n_dims]
-    float* velocities;  // [n_particles * n_dims]
-    float* pbest_pos;   // [n_particles * n_dims]
-    float* pbest;   // [n_particles] - overall best fitness of each particle
-    float* fitness;     // [n_particles]
-    //global best section
-    float gbest_val; //scalar best fitness seen across all particles
-    int gbest_idx; //global best index
-    float* gbest_pos; //[n_dims] - needed for less wasteful memory management
-    float* d_gbest_val; // device ptr, scalar best fitness
-    int* d_gbest_idx; // device ptr, scalar best particle index
-
-    //Reduction workspace — strategy-agnostic blob
-    //(lets us call argmin() OR )
-    void*  reduce_tmp;       // device ptr, opaque to caller
-    size_t reduce_tmp_bytes; // size of above
-
-    ReduceResult* d_reduce_out; // device ptr, single ReduceResult
-
-    float* d_gbest_history; // device ptr, [max_iters], filled one entry/iter for convergence figure in progress report.
-    // One curandState per particle. Per-iter randoms for the update kernel are
-    // pregenerated into d_r1/d_r2 (N*D each) by kernel_draw_rng so the update
-    // kernel itself does no RNG work and the per-iter RNG state traffic is N
-    // instead of N*D.
-    curandState* d_rng_states; // device ptr, [N]
-    float* d_r1;               // device ptr, [N*D] — pregenerated each iter
-    float* d_r2;               // device ptr, [N*D] — pregenerated each iter
-
+    float* positions;
+    float* velocities;
+    float* pbest_pos;
+    float* pbest;
+    float* fitness;
+    float  gbest_val;
+    int    gbest_idx;
+    float* gbest_pos;
+    float* d_gbest_val;
+    int*   d_gbest_idx;
+    void*  reduce_tmp;
+    size_t reduce_tmp_bytes;
+    ReduceResult* d_reduce_out;
+    float*        d_gbest_history;
+    curandState*  d_rng_states;
+    float*        d_r1;
+    float*        d_r2;
 } swarm;
 
 typedef struct {
@@ -78,20 +110,6 @@ PSOResult pso_run(const PSOConfig* cfg, EvaluatorFn evaluator, int islands, char
 //note islands is the number of independent swarms to run in parallel
 //topology defines our communication topology
 void pso_result_free(PSOResult* result);
-
-// =============================================================================
-// Milestone 3 — single-GPU TODOs (header surface)
-// =============================================================================
-// swarm_alloc(swarm*, const PSOConfig*)
-//           cudaMalloc positions, velocities, pbest_pos, pbest, fitness,
-//           gbest_pos, d_reduce_out, reduce_tmp workspace, cuRAND states.
-// swarm_free(swarm*) — paired cudaFree, null out pointers.
-// swarm_init(swarm*, const PSOConfig*)
-//           launch curand_init kernel; fill positions ~ U[bound_lo, bound_hi];
-//           velocities ~ U[-|hi-lo|, |hi-lo|] (or zero); seed pbest = +INF.
-// =============================================================================
-// Deferred to Milestone 4: n_islands / topology fields above stay unused.
-// =============================================================================
 
 cudaError_t swarm_alloc(swarm* s, const PSOConfig* cfg);
 cudaError_t swarm_free(swarm* s);
