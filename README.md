@@ -8,22 +8,22 @@ Parallel Implementation of Particle Swarm Optimization on CUDA
 ## Project Structure
 '''
 pso/
-├── pso.h — PSOConfig, swarm, PSOResult, pso_run()
-├── pso.cu — swarm lifecycle + main loop (calls kernels & reducer)
-├── kernels.cuh — _global_ kernel declarations (eval_pbest, update) + reduction
-├── kernels.cu — kernel implementations (eval, pbest, updating, reduction)
-├── reduce.cuh — ReduceResult, reduce_argmin_cub declaration
-├── reduce.cu — CUB-based argmin reduction + gbest commit/copy kernels
+├── pso.h          — PSOConfig, swarm, PSOResult, pso_run()
+├── pso.cu         — swarm lifecycle + main loop (calls kernels & reducer)
+├── kernels.cuh    — __global__ kernel declarations (eval_pbest, update) + reduction
+├── kernels.cu     — kernel implementations (eval, pbest, updating, reduction)
+├── reduce.cuh     — ReduceResult, reduce_argmin_cub declaration
+├── reduce.cu      — CUB-based argmin reduction + gbest commit/copy kernels
 evals/
 ├── evals.cuh
 └── evals.cu
 src/
-├── main.cu — single-GPU entry point
-├── main_ring.cu — MPI ring-topology entry point
-└── main_fc.cu — MPI fully-connected entry point
+├── main.cu        — single-GPU entry point
+├── main_ring.cu   — MPI ring-topology entry point
+└── main_fc.cu     — MPI fully-connected entry point
 mpi/
-├── mpi_island.h — IslandSyncData, sync callback declarations
-└── mpi_island.cu — island_gbest_exchange, island_migrate_ring/fc
+├── mpi_island.h   — IslandSyncData, sync callback declarations
+└── mpi_island.cu  — island_gbest_exchange, island_migrate_ring/fc
 '''
 
 ---

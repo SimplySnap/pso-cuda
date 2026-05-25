@@ -11,6 +11,7 @@ STD       ?= c++17
 PSO_DIR   := pso
 EVAL_DIR  := evals
 SRC_DIR   := src
+MPI_DIR   := mpi
 BUILD_DIR := build
 
 BIN       := $(BUILD_DIR)/pso_cuda
@@ -51,12 +52,15 @@ INCLUDES  := -I$(PSO_DIR) -I$(EVAL_DIR) -I$(SRC_DIR)
 ARCHFLAGS := -gencode arch=compute_$(SM),code=sm_$(SM)
 
 #query MPI compile/link flags from the MPI wrapper
-MPI_CFLAGS    := $(shell $(MPICXX) --showme:compile 2>/dev/null || echo "")
-MPI_LDFLAGS   := $(shell $(MPICXX) --showme:link   2>/dev/null || echo "-lmpi")
+MPI_INCLUDES := -I/opt/ohpc/pub/mpi/openmpi4-gnu12/4.1.6/include
+MPI_LDFLAGS  := -L/opt/ohpc/pub/mpi/openmpi4-gnu12/4.1.6/lib -lmpi
 
 NVCCFLAGS := -std=$(STD) $(ARCHFLAGS) $(INCLUDES) \
              --expt-relaxed-constexpr \
              -Xcompiler -Wall,-Wextra
+#initialize MPI flags
+NVCCFLAGS_MPI := $(NVCCFLAGS) $(MPI_INCLUDES)
+
 CXXFLAGS  := -std=$(STD) -O3 -Wall -Wextra
 
 BUILD ?= release
@@ -69,7 +73,7 @@ else
 endif
 
 LDLIBS     := -lcurand
-LDLIBS_MPI := -lcurand $(MPI_LDFLAGS)s
+LDLIBS_MPI := -lcurand $(MPI_LDFLAGS)
 
 # ---- rules -------------------------------------------------------------------
 .PHONY: all mpi clean run ring fc cpu bench-cpu debug release info
@@ -118,7 +122,8 @@ $(BUILD_DIR)/$(EVAL_DIR)/%.o: $(EVAL_DIR)/%.cu
 
 $(BUILD_DIR)/$(MPI_DIR)/%.o: $(MPI_DIR)/%.cu
 	@mkdir -p $(dir $@)
-	$(NVCC) $(NVCCFLAGS_MPI) -dc $< -o $@# ---- convenience targets -----------------------------------------------------
+	$(NVCC) $(NVCCFLAGS_MPI) -dc $< -o $@ 
+# ---- convenience targets -----------------------------------------------------
 run: $(BIN)
 	./$(BIN)
 

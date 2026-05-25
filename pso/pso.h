@@ -14,6 +14,13 @@
 typedef float (*EvaluatorFn)(const float* position, int n_dim);
 #endif
 
+//sync callback type — called every sync_interval iterations in multi-island runs
+typedef void (*SyncCallback)(IslandState* state, void* user_data);
+
+//forward declare for MPI runs — full definition lives in mpi/mpi_island.h
+//NB this is needed to declare the SyncCallback type above, which takes an IslandState pointer
+typedef struct IslandState IslandState;
+
 /*Structures: config, best soln, particle*/
 typedef struct {
     int   n_particles;   // swarm size
@@ -28,6 +35,8 @@ typedef struct {
     int n_islands;       // number of islands (and thus gpu clusters)
     char* topology;      // string topology
     unsigned long long seed; // RNG seed for reproducibility (optional, can be zero)
+    SyncCallback on_sync;
+    void*        on_sync_data;
 } PSOConfig;
 
 //SofA format - coalescing. Downside - no swarm particle 'object'

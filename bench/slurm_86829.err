@@ -1,0 +1,97 @@
+/bin/sh: --: invalid option
+Usage:	/bin/sh [GNU long option] [option] ...
+	/bin/sh [GNU long option] [option] script-file ...
+GNU long options:
+	--debug
+	--debugger
+	--dump-po-strings
+	--dump-strings
+	--help
+	--init-file
+	--login
+	--noediting
+	--noprofile
+	--norc
+	--posix
+	--rcfile
+	--rpm-requires
+	--restricted
+	--verbose
+	--version
+Shell options:
+	-ilrsD or -c command or -O shopt_option		(invocation only)
+	-abefhkmnptuvxBCHP or -o option
+/bin/sh: --: invalid option
+Usage:	/bin/sh [GNU long option] [option] ...
+	/bin/sh [GNU long option] [option] script-file ...
+GNU long options:
+	--debug
+	--debugger
+	--dump-po-strings
+	--dump-strings
+	--help
+	--init-file
+	--login
+	--noediting
+	--noprofile
+	--norc
+	--posix
+	--rcfile
+	--rpm-requires
+	--restricted
+	--verbose
+	--version
+Shell options:
+	-ilrsD or -c command or -O shopt_option		(invocation only)
+	-abefhkmnptuvxBCHP or -o option
+/bin/sh: --: invalid option
+Usage:	/bin/sh [GNU long option] [option] ...
+	/bin/sh [GNU long option] [option] script-file ...
+GNU long options:
+	--debug
+	--debugger
+	--dump-po-strings
+	--dump-strings
+	--help
+	--init-file
+	--login
+	--noediting
+	--noprofile
+	--norc
+	--posix
+	--rcfile
+	--rpm-requires
+	--restricted
+	--verbose
+	--version
+Shell options:
+	-ilrsD or -c command or -O shopt_option		(invocation only)
+	-abefhkmnptuvxBCHP or -o option
+/bin/sh: --: invalid option
+Usage:	/bin/sh [GNU long option] [option] ...
+	/bin/sh [GNU long option] [option] script-file ...
+GNU long options:
+	--debug
+	--debugger
+	--dump-po-strings
+	--dump-strings
+	--help
+	--init-file
+	--login
+	--noediting
+	--noprofile
+	--norc
+	--posix
+	--rcfile
+	--rpm-requires
+	--restricted
+	--verbose
+	--version
+Shell options:
+	-ilrsD or -c command or -O shopt_option		(invocation only)
+	-abefhkmnptuvxBCHP or -o option
+src/main_ring.cu:5:10: fatal error: mpi.h: No such file or directory
+    5 | #include <mpi.h>
+      |          ^~~~~~~
+compilation terminated.
+make: *** [Makefile:99: build/src/main_ring.o] Error 1

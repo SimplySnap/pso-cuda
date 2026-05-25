@@ -164,6 +164,7 @@ int main(int argc, char** argv) {
 
     IslandSyncData sync_data{};
     island_sync_data_alloc(&sync_data, MPI_COMM_WORLD, args.n_migrate, args.n_dims);
+    sync_data.sync_interval = args.sync_interval; //directly set MPI sync interval
 
     PSOConfig cfg = {
         .n_particles   = args.n_particles,
@@ -177,7 +178,7 @@ int main(int argc, char** argv) {
         .n_islands     = n_ranks,
         .topology      = (char*)"fc",
         .seed          = args.seed + (unsigned long long)rank,
-        .sync_interval = args.sync_interval,
+        //.sync_interval = args.sync_interval,
         .on_sync       = island_migrate_fc,
         .on_sync_data  = &sync_data,
     };

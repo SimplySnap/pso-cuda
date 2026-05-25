@@ -215,4 +215,122 @@ void island_migrate_ring(IslandState* state, void* user_data) {
         CUDA_CHECK(cudaMemcpy(
             state->d_pbest_pos + dim * N,
             h_pbest_row.data(),
-            
+            sizeof(float) * N, cudaMemcpyHostToDevice));  //was cut off here
+    }
+    //update pbest_fit for injected slots
+    std::vector<float> h_fit_write(N);
+    CUDA_CHECK(cudaMemcpy(h_fit_write.data(), state->d_pbest_fit,
+        sizeof(float) * N, cudaMemcpyDeviceToHost));
+    for (int mi = 0; mi < m; ++mi)
+        h_fit_write[worst_idx[mi]] = d->h_recv_fit[mi];
+    CUDA_CHECK(cudaMemcpy(state->d_pbest_fit,
+        h_fit_write.data(),
+        sizeof(float) * N, cudaMemcpyHostToDevice));
+
+    island_gbest_exchange(state, user_data);
+}
+
+void island_migrate_fc(IslandState* state, void* user_data) {
+    /**
+     * @brief Fully-connected migration: share top n_migrate particles with ALL
+     *        ranks via MPI_Allgather, inject globally best n_migrate not owned
+     *        by this rank into worst slots, then exchange gbest.
+     *
+     * @param state     Device state snapshot.
+     * @param user_data IslandSyncData*.
+     *
+     * @returns void.
+     *
+     * @Structure
+     *   - pull pbest_fit D->H, find top m indices
+     *   - pack h_send_pos / h_send_fit
+     *   - MPI_Allgather into gathered pos [n_ranks * m * D] and fit [n_ranks * m]
+     *   - pick best m particles globally that don't belong to this rank
+     *   - find worst m indices on this island
+     *   - inject selected particles into worst slots of d_pbest_pos / d_pbest_fit
+     *   - island_gbest_exchange()
+     */
+    IslandSyncData* d = (IslandSyncData*)user_data;
+    int N       = state->N;
+    int D       = state->D;
+    int m       = d->n_migrate;
+    int nranks  = d->n_ranks;
+
+    //pull pbest_fit to host
+    std::vector<float> h_fit(N);
+    CUDA_CHECK(cudaMemcpy(h_fit.data(), state->d_pbest_fit,
+        sizeof(float) * N, cudaMemcpyDeviceToHost));
+
+    std::vector<int> top = top_indices(h_fit.data(), N, m);
+
+    //pack send buffers
+    std::vector<float> h_pbest_row(N);
+    for (int dim = 0; dim < D; ++dim) {
+        CUDA_CHECK(cudaMemcpy(h_pbest_row.data(),
+            state->d_pbest_pos + dim * N,
+            sizeof(float) * N, cudaMemcpyDeviceToHost));
+        for (int mi = 0; mi < m; ++mi)
+            d->h_send_pos[dim * m + mi] = h_pbest_row[top[mi]];
+    }
+    for (int mi = 0; mi < m; ++mi)
+        d->h_send_fit[mi] = h_fit[top[mi]];
+
+    //gather all islands' top particles — gathered_pos[rank * m * D + dim * m + mi]
+    std::vector<float> gathered_pos(nranks * m * D);
+    std::vector<float> gathered_fit(nranks * m);
+    MPI_Allgather(d->h_send_pos, m * D, MPI_FLOAT,
+                  gathered_pos.data(), m * D, MPI_FLOAT, d->comm);
+    MPI_Allgather(d->h_send_fit, m, MPI_FLOAT,
+                  gathered_fit.data(), m, MPI_FLOAT, d->comm);
+
+    //collect all foreign particles sorted by fitness ascending
+    //skip own rank's block
+    struct Candidate { float fit; int rank; int mi; };
+    std::vector<Candidate> cands;
+    cands.reserve((nranks - 1) * m);
+    for (int r = 0; r < nranks; ++r) {
+        if (r == d->rank) continue;
+        for (int mi = 0; mi < m; ++mi)
+            cands.push_back({ gathered_fit[r * m + mi], r, mi });
+    }
+    std::sort(cands.begin(), cands.end(),
+        [](const Candidate& a, const Candidate& b){ return a.fit < b.fit; });
+
+    //take the best m foreign candidates
+    int n_inject = std::min(m, (int)cands.size());
+
+    //find worst m slots on this island
+    std::vector<int> idx(N);
+    for (int i = 0; i < N; ++i) idx[i] = i;
+    std::partial_sort(idx.begin(), idx.begin() + n_inject, idx.end(),
+        [&](int a, int b){ return h_fit[a] > h_fit[b]; }); //descending = worst first
+    std::vector<int> worst_idx(idx.begin(), idx.begin() + n_inject);
+
+    //inject positions dim by dim
+    for (int dim = 0; dim < D; ++dim) {
+        CUDA_CHECK(cudaMemcpy(h_pbest_row.data(),
+            state->d_pbest_pos + dim * N,
+            sizeof(float) * N, cudaMemcpyDeviceToHost));
+        for (int i = 0; i < n_inject; ++i) {
+            int r  = cands[i].rank;
+            int mi = cands[i].mi;
+            h_pbest_row[worst_idx[i]] = gathered_pos[r * m * D + dim * m + mi];
+        }
+        CUDA_CHECK(cudaMemcpy(
+            state->d_pbest_pos + dim * N,
+            h_pbest_row.data(),
+            sizeof(float) * N, cudaMemcpyHostToDevice));
+    }
+
+    //inject fitnesses
+    std::vector<float> h_fit_write(N);
+    CUDA_CHECK(cudaMemcpy(h_fit_write.data(), state->d_pbest_fit,
+        sizeof(float) * N, cudaMemcpyDeviceToHost));
+    for (int i = 0; i < n_inject; ++i)
+        h_fit_write[worst_idx[i]] = cands[i].fit;
+    CUDA_CHECK(cudaMemcpy(state->d_pbest_fit,
+        h_fit_write.data(),
+        sizeof(float) * N, cudaMemcpyHostToDevice));
+
+    island_gbest_exchange(state, user_data);
+}
