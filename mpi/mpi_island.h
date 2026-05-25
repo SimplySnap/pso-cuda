@@ -14,7 +14,7 @@
  * @param d_gbest_val   Device ptr, scalar global best fitness.
  * @param d_gbest_idx   Device ptr, scalar index of global best particle.
  */
-typedef struct {
+typedef struct IslandState {
     int    N;
     int    D;
     float* d_pbest_pos;  //[D * N] SoA

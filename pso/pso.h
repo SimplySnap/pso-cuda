@@ -14,12 +14,12 @@
 typedef float (*EvaluatorFn)(const float* position, int n_dim);
 #endif
 
-//sync callback type — called every sync_interval iterations in multi-island runs
-typedef void (*SyncCallback)(IslandState* state, void* user_data);
-
 //forward declare for MPI runs — full definition lives in mpi/mpi_island.h
 //NB this is needed to declare the SyncCallback type above, which takes an IslandState pointer
 typedef struct IslandState IslandState;
+
+//sync callback type — called every sync_interval iterations in multi-island runs
+typedef void (*SyncCallback)(IslandState* state, void* user_data);
 
 /*Structures: config, best soln, particle*/
 typedef struct {
