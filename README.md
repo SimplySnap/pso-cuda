@@ -6,7 +6,7 @@ Parallel Implementation of Particle Swarm Optimization on CUDA
 ## Project Structure
 
 ## Project Structure
-
+'''
 pso/
 ├── pso.h          — PSOConfig, swarm, PSOResult, pso_run()
 ├── pso.cu         — swarm lifecycle + main loop (calls kernels & reducer)
@@ -24,7 +24,7 @@ src/
 mpi/
 ├── mpi_island.h   — IslandSyncData, sync callback declarations
 └── mpi_island.cu  — island_gbest_exchange, island_migrate_ring/fc
-
+'''
 
 ---
 
