@@ -16,7 +16,10 @@ sbatch bench/correctness.sh     # correctness sweep across rank counts, ~3 min
 sbatch bench/scaling.sh         # M4 strong + weak scaling at N_total=4096, ~5 min
 sbatch bench/sweeps.sh          # Phase E: N-sweep, sync-Pareto, large-N strong/weak, ~7 min
 sbatch bench/sweep_NxRxD.sh     # Phase G: D × ranks × N matrix at sync=25, m=N/100, ~14 min
-sbatch bench/nsys.sh            # Nsight Systems trace, ~3 min
+sbatch bench/sweep_largeN_strong.sh  # Phase H1: strong scaling at N_total=8M D=100, ~10 min
+sbatch bench/sweep_largeN_weak.sh    # Phase H2: weak scaling per-rank N=8M D=100, ~25 min
+sbatch bench/nsys_largeN.sh     # Phase H3: Nsight at N=2M D=100 ring np=4, ~3 min
+sbatch bench/nsys.sh            # Nsight Systems trace (small-N), ~3 min
 
 python3 bench/mpi_analyze.py    # regenerate all MPI figures + table_mpi.md
 python3 bench/analyze.py        # M3 single-GPU figures (carryover, optional)
@@ -31,7 +34,10 @@ python3 bench/analyze.py        # M3 single-GPU figures (carryover, optional)
 | `scaling.sh` | `scaling_{strong,weak,baseline}.csv` — M4 N_total=4096 study | 4 nodes, 4 ranks |
 | `sweeps.sh` | Phase E: `sweep_N.csv`, `sweep_sync.csv`, `sweep_{strong,weak}_largeN.csv` | 4 nodes, 4 ranks |
 | `sweep_NxRxD.sh` | Phase G: `sweep_NxRxD.csv` + baseline + levy. Uses sync=25, m=N/100 | 4 nodes, 16 ranks (1/GPU) |
-| `nsys.sh` | `trace_ring_rank_*.nsys-rep` + `nsys_summary.txt` | 2 nodes, 2 ranks |
+| `sweep_largeN_strong.sh` | Phase H1: strong scaling at N_total=8M, D=100, np={1,2,4,8,16}, no timeout | 4 nodes, 16 ranks |
+| `sweep_largeN_weak.sh` | Phase H2: weak scaling per-rank N=8M, D=100, np={1,2,4,8,16}, no timeout | 4 nodes, 16 ranks |
+| `nsys_largeN.sh` | Phase H3: nsys profile at N=2M, D=100, ring np=4, iters=100 | 1 node, 4 ranks |
+| `nsys.sh` | M4 small-N nsys: `trace_ring_rank_*.nsys-rep` + `nsys_summary.txt` | 2 nodes, 2 ranks |
 | `analyze.py` | M3 single-GPU figures (legacy) | login node, ~5 sec |
 | `mpi_analyze.py` | All MPI figures + `table_mpi.md` | login node, ~15 sec |
 
@@ -66,6 +72,14 @@ python3 bench/analyze.py        # M3 single-GPU figures (carryover, optional)
 | `sweep_NxRxD_baseline.csv` | pso_cuda single-GPU at the matching (D, N) cells |
 | `sweep_NxRxD_levy.csv` | 3 levy sanity rows, one per D ∈ {30, 100, 300} |
 
+### Phase H (D=100, large N, sync=25, m=N/100, no timeout)
+
+| CSV | What |
+|---|---|
+| `sweep_largeN_strong.csv` | Strong scaling at N_total=8M (per-rank N varies as N_total/ranks) |
+| `sweep_largeN_strong_baseline.csv` | pso_cuda single-GPU at N=8M for the strong speedup baseline |
+| `sweep_largeN_weak.csv` | Weak scaling at per-rank N=8M (total N grows with ranks) |
+
 **Schema note:** All MPI CSVs written via `--csv_path` are *headerless*. The column order is:
 ```
 topology,evaluator,n_islands,N,D,iters,seed,eval_ms,reduce_ms,update_ms,sync_ms,total_ms,final_gbest
@@ -84,14 +98,17 @@ This is documented as `MPI_CSV_COLS` at the top of `mpi_analyze.py`.
 | `fig_sweep_sync.png` | sweep_sync.csv | Phase E sync Pareto: sync_ms vs gbest with ±std bands |
 | `fig_sweep_largeN_scaling.png` | sweep_{strong,weak}_largeN.csv | rank scaling at N_total=16384 |
 | `fig_sweep_NxRxD.png` | sweep_NxRxD.csv | Phase G: 3 panels (D=30/100/300), total_ms vs N with 60s ceiling |
+| `fig_largeN_strong_weak.png` | sweep_largeN_{strong,weak}.csv | Phase H: 2×2 grid (strong total_ms, strong speedup, weak total_ms, breakdown stacked-bar) |
 
 ## Profiling traces
 
 | File | What |
 |---|---|
-| `trace_ring_rank_0.nsys-rep` | Per-rank Nsight Systems profile (rank 0 of np=2 ring run) |
+| `trace_ring_rank_0.nsys-rep` | M4 baseline per-rank trace (np=2 ring, N=1024 iters=200) |
 | `trace_ring_rank_1.nsys-rep` | Same, rank 1 |
-| `nsys_summary.txt` | `nsys stats` text output — cuda_api_sum + cuda_gpu_kern_sum |
+| `nsys_summary.txt` | M4 baseline nsys stats (small N) |
+| `trace_largeN_rank_{0..3}.nsys-rep` | Phase H per-rank trace at large N (np=4 ring, N=2M D=100 iters=100) |
+| `nsys_summary_largeN.txt` | Phase H nsys stats — the regime where sync ≈ compute |
 
 ## Slurm logs
 
@@ -105,6 +122,7 @@ This is documented as `MPI_CSV_COLS` at the top of `mpi_analyze.py`.
 4. **fc topology breaks at np=16** — Allgather's O(p²) cost makes sync 10× compute. Ring stays viable.
 5. **Algorithmic differentiation requires high D.** At D=30, multi-island doesn't help. At D=100+, migration gives ~20-34% better gbest.
 6. **Host-staging is the bottleneck** — confirmed by Nsight: 28.4 ms cudaMemcpy vs 3.8 ms GPU kernel time per 200 iters.
+7. **Phase H rerun at N_total=8M, D=100 reveals near-ideal ring scaling:** np=16 gives **13.65× speedup over np=1 (0.85 efficiency)** and **8.11× over single-GPU**. The previous "MPI doesn't beat single-GPU" narrative was a *small-N artifact*. fc still collapses past np=4 (Allgather O(p²)).
 
 ## Where to build next
 

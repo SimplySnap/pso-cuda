@@ -409,6 +409,174 @@ def emit_sweep_tables(out_lines, sweep_N, baseline_N,
     out_lines.append("")
 
 
+def fig_largeN_strong_weak(strong, weak, baseline):
+    """2x2 grid summarizing Phase H large-N strong + weak scaling.
+       top-left:  strong total_ms vs ranks
+       top-right: strong speedup vs ranks (two baselines per topology)
+       bottom-left:  weak total_ms vs ranks
+       bottom-right: stacked-bar breakdown of eval/reduce/update/sync per
+                     (ranks, topology) for both strong and weak.
+    """
+    fig, axes = plt.subplots(2, 2, figsize=(12, 8))
+
+    topo_styles = {"ring": "-", "fc": "--"}
+    topo_colors = {"ring": "#4C72B0", "fc": "#C44E52"}
+
+    # --- Strong scaling: total_ms vs ranks
+    ax = axes[0, 0]
+    if strong is not None and not strong.empty:
+        for topo, g in strong.sort_values("n_islands").groupby("topology"):
+            ax.plot(g["n_islands"], g["total_ms"],
+                    marker="o",
+                    color=topo_colors.get(topo, "black"),
+                    linestyle=topo_styles.get(topo, "-"),
+                    label=f"{topo}")
+    ax.set_xlabel("ranks")
+    ax.set_ylabel("total_ms")
+    ax.set_xscale("log", base=2)
+    ax.set_yscale("log")
+    ax.set_title("Strong scaling: total_ms (N_total=8M, D=100)")
+    ax.legend(fontsize=8)
+    ax.grid(alpha=0.3, which="both")
+
+    # --- Strong scaling: speedup vs ranks (two baselines)
+    ax = axes[0, 1]
+    if strong is not None and not strong.empty:
+        t_single = None
+        if baseline is not None and not baseline.empty:
+            row = baseline[baseline["N"] == 8388608]
+            if not row.empty:
+                t_single = float(row["total_ms"].iloc[0])
+        for topo, g in strong.sort_values("n_islands").groupby("topology"):
+            t_mpi1 = g.loc[g["n_islands"] == 1, "total_ms"]
+            if not t_mpi1.empty:
+                ax.plot(g["n_islands"], float(t_mpi1.iloc[0]) / g["total_ms"],
+                        marker="o",
+                        color=topo_colors.get(topo, "black"),
+                        linestyle=topo_styles.get(topo, "-"),
+                        label=f"{topo} vs pso_{topo} -np 1")
+            if t_single is not None:
+                ax.plot(g["n_islands"], t_single / g["total_ms"],
+                        marker="s",
+                        color=topo_colors.get(topo, "black"),
+                        linestyle=":",
+                        alpha=0.7,
+                        label=f"{topo} vs pso_cuda single-GPU")
+        xs = sorted(strong["n_islands"].unique())
+        ax.plot(xs, xs, color="gray", linestyle=":", alpha=0.5,
+                label="ideal y = p")
+    ax.set_xlabel("ranks")
+    ax.set_ylabel("speedup")
+    ax.set_xscale("log", base=2)
+    ax.set_yscale("log")
+    ax.set_title("Strong scaling: speedup")
+    ax.legend(fontsize=7)
+    ax.grid(alpha=0.3, which="both")
+
+    # --- Weak scaling: total_ms vs ranks
+    ax = axes[1, 0]
+    if weak is not None and not weak.empty:
+        for topo, g in weak.sort_values("n_islands").groupby("topology"):
+            ax.plot(g["n_islands"], g["total_ms"],
+                    marker="o",
+                    color=topo_colors.get(topo, "black"),
+                    linestyle=topo_styles.get(topo, "-"),
+                    label=f"{topo}")
+    ax.set_xlabel("ranks")
+    ax.set_ylabel("total_ms")
+    ax.set_xscale("log", base=2)
+    ax.set_title("Weak scaling: total_ms (per-rank N=8M, D=100)")
+    ax.legend(fontsize=8)
+    ax.grid(alpha=0.3, which="both")
+
+    # --- Stacked-bar breakdown
+    ax = axes[1, 1]
+    parts = ["eval_ms", "reduce_ms", "update_ms", "sync_ms"]
+    colors = ["#4C72B0", "#55A868", "#C44E52", "#8172B2"]
+    rows = []
+    if strong is not None and not strong.empty:
+        for _, r in strong.sort_values(["topology", "n_islands"]).iterrows():
+            rows.append(("S", r))
+    if weak is not None and not weak.empty:
+        for _, r in weak.sort_values(["topology", "n_islands"]).iterrows():
+            rows.append(("W", r))
+    labels = [f"{tag}-{r['topology']}\nnp={int(r['n_islands'])}"
+              for tag, r in rows]
+    x = list(range(len(rows)))
+    bottom = [0.0] * len(rows)
+    for part, color in zip(parts, colors):
+        vals = [float(r[part]) for _, r in rows]
+        ax.bar(x, vals, bottom=bottom, color=color, label=part)
+        bottom = [b + v for b, v in zip(bottom, vals)]
+    if x:
+        ax.set_xticks(x)
+        ax.set_xticklabels(labels, fontsize=7, rotation=0)
+    ax.set_ylabel("time (ms)")
+    ax.set_title("Comm/compute breakdown (S = strong, W = weak)")
+    ax.legend(fontsize=8, loc="upper left")
+    ax.grid(alpha=0.3, axis="y")
+
+    fig.suptitle("Phase H — large-N strong + weak scaling (D=100, sync=25, m=N/100)",
+                 y=1.00, fontsize=11)
+    fig.tight_layout()
+    fig.savefig(os.path.join(HERE, "fig_largeN_strong_weak.png"),
+                dpi=120, bbox_inches="tight")
+    plt.close(fig)
+
+
+def emit_largeN_tables(out_lines, strong, weak, baseline):
+    """Append Phase H strong + weak tables to the markdown."""
+    out_lines.append("\n---\n\n# Phase H — Large-N strong + weak scaling\n")
+    out_lines.append("`D = 100`, `sync_interval = 25`, `migrate = max(5, N/100)`, "
+                     "`iters = 500`, `evaluator = rastrigin`.\n")
+
+    if baseline is not None and not baseline.empty:
+        b = baseline[baseline["N"] == 8388608]
+        if not b.empty:
+            t = float(b["total_ms"].iloc[0])
+            g = float(b["final_gbest"].iloc[0])
+            out_lines.append(
+                f"Single-GPU baseline (`pso_cuda --N 8388608 --D 100`): "
+                f"**total_ms = {t:.1f}**, final_gbest = {g:.3f}.\n")
+
+    if strong is not None and not strong.empty:
+        out_lines.append("## Strong scaling (N_total = 8M)\n")
+        s = strong.copy().sort_values(["topology", "n_islands"])
+        for topo, gtopo in s.groupby("topology"):
+            t_mpi1 = gtopo.loc[gtopo["n_islands"] == 1, "total_ms"]
+            if not t_mpi1.empty:
+                gtopo = gtopo.copy()
+                gtopo["speedup_vs_mpi1"] = (float(t_mpi1.iloc[0])
+                                            / gtopo["total_ms"]).round(3)
+                gtopo["efficiency"] = (gtopo["speedup_vs_mpi1"]
+                                       / gtopo["n_islands"]).round(3)
+                s.loc[gtopo.index, "speedup_vs_mpi1"] = gtopo["speedup_vs_mpi1"]
+                s.loc[gtopo.index, "efficiency"] = gtopo["efficiency"]
+        cols = ["topology", "n_islands", "N", "eval_ms", "reduce_ms",
+                "update_ms", "sync_ms", "total_ms",
+                "speedup_vs_mpi1", "efficiency", "final_gbest"]
+        cols = [c for c in cols if c in s.columns]
+        out_lines.append(s[cols].round(3).to_markdown(index=False))
+        out_lines.append("")
+
+    if weak is not None and not weak.empty:
+        out_lines.append("## Weak scaling (per-rank N = 8M)\n")
+        w = weak.copy().sort_values(["topology", "n_islands"])
+        for topo, gtopo in w.groupby("topology"):
+            t_mpi1 = gtopo.loc[gtopo["n_islands"] == 1, "total_ms"]
+            if not t_mpi1.empty:
+                gtopo = gtopo.copy()
+                gtopo["efficiency"] = (float(t_mpi1.iloc[0])
+                                       / gtopo["total_ms"]).round(3)
+                w.loc[gtopo.index, "efficiency"] = gtopo["efficiency"]
+        cols = ["topology", "n_islands", "N", "eval_ms", "reduce_ms",
+                "update_ms", "sync_ms", "total_ms",
+                "efficiency", "final_gbest"]
+        cols = [c for c in cols if c in w.columns]
+        out_lines.append(w[cols].round(3).to_markdown(index=False))
+        out_lines.append("")
+
+
 def emit_NxRxD_table(out_lines, matrix, baseline, levy):
     """Pivot indexed by (D, ranks, topology, N) with compute / sync / total /
     sync_ratio / final_gbest. Plus a single-GPU baseline column merged by (D, N)
@@ -502,6 +670,19 @@ def main():
                         nxr_base if nxr_base is not None else pd.DataFrame())
         print("wrote bench/fig_sweep_NxRxD.png")
         emit_NxRxD_table(table_lines, nxr_matrix, nxr_base, nxr_levy)
+
+    # Phase H — large-N strong + weak scaling.
+    largeN_strong = load("sweep_largeN_strong.csv",          required=False,
+                         headerless_cols=MPI_CSV_COLS)
+    largeN_weak   = load("sweep_largeN_weak.csv",            required=False,
+                         headerless_cols=MPI_CSV_COLS)
+    largeN_base   = load("sweep_largeN_strong_baseline.csv", required=False)
+
+    if (largeN_strong is not None and not largeN_strong.empty) \
+            or (largeN_weak is not None and not largeN_weak.empty):
+        fig_largeN_strong_weak(largeN_strong, largeN_weak, largeN_base)
+        print("wrote bench/fig_largeN_strong_weak.png")
+        emit_largeN_tables(table_lines, largeN_strong, largeN_weak, largeN_base)
 
     with open(os.path.join(HERE, "table_mpi.md"), "w") as f:
         f.write("\n".join(table_lines))
