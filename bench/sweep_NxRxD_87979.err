@@ -1,0 +1,8 @@
+mpirun: Forwarding signal 18 to job
+[hpcc-gpu-5-4:341661] *** An error occurred in MPI_Allgather
+[hpcc-gpu-5-4:341661] *** reported by process [1802240001,11]
+[hpcc-gpu-5-4:341661] *** on communicator MPI_COMM_WORLD
+[hpcc-gpu-5-4:341661] *** MPI_ERR_OTHER: known error not in list
+[hpcc-gpu-5-4:341661] *** MPI_ERRORS_ARE_FATAL (processes in this communicator will now abort,
+[hpcc-gpu-5-4:341661] ***    and potentially your MPI job)
+[hpcc-gpu-5-4:341661] ../../../../../ompi/mca/pml/ucx/pml_ucx.c:916  Error: mca_pml_ucx_send_nbr failed: -25, Connection reset by remote peer

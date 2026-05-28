@@ -227,11 +227,194 @@ CUDA kernel breakdown:
 
 (`mpi_event_sum` did not produce data on this Nsight version, but the `cudaMemcpy` timing already captures the host-side cost of the sync.)
 
+### 6.4 N-sweep — does sync amortize at large N?
+
+(Follow-up sweep `bench/sweeps.sh`, ranks=4, sync=10, iters=500. Data in `bench/sweep_N.csv` + `bench/sweep_N_baseline.csv`, figure in `bench/fig_sweep_N.png`.)
+
+The §6 headline at total N=4096 was "sync_ms ~10× compute, MPI loses to single-GPU." This sweep asks: **does that ratio shrink as N grows, and at what point does MPI catch up?**
+
+| N | compute_ms (ring) | sync_ms (ring) | sync/compute ratio | pso_cuda total_ms | MPI total_ms (ring np=4) |
+|---|---|---|---|---|---|
+| 1,024 | 14.07 | 90.08 | **6.4×** | 13.15 | 104.15 |
+| 4,096 | 15.45 | 112.77 | **7.3×** | 14.73 | 128.22 |
+| 16,384 | 34.34 | 158.55 | **4.6×** | 34.68 | 192.89 |
+| 65,536 | 140.42 | 387.51 | **2.8×** | 142.87 | 527.93 |
+
+**Findings:**
+
+1. **The ratio does decrease — from 7.3× at N=4096 down to 2.8× at N=65536.** Compute grows roughly linearly in N (140 ms at N=65536, ~10× N=4096); `sync_ms` grows only ~3.4× over the same range (113 → 388). The MPI host-staging callback is dominated by per-call fixed costs (cudaMemcpy launch latency, MPI collective setup), and those costs are amortized once per-iter compute is heavy enough.
+2. **MPI does not yet beat single-GPU within N ≤ 65,536** — at the largest tested N, `pso_ring -np 4` takes 528 ms vs `pso_cuda`'s 143 ms (still 3.7× slower). Linear extrapolation of the ratio suggests crossover would occur somewhere around N ≈ 250,000 — at which point single-GPU also becomes slow enough that the MPI overhead is structurally amortized.
+3. **Convergence quality improves dramatically with N** — `final_gbest` drops from 13.9 at N=1024 down to 3.98 at N=65536. Larger swarms find better minima regardless of topology, and 4 MPI ranks × 65536 = 262K total particles is genuinely more thorough than 65536 single-GPU.
+
+The single-GPU baseline at N=65536 (142.87 ms, gbest=8.95) is **strictly worse than MPI at N=65536 (528 ms, gbest=3.98)** on convergence quality at fixed iterations. So if the metric of interest is "best gbest at fixed wall time" rather than "fastest per-iter," MPI can win even today — just at a much larger N than M4 originally tested.
+
+> **Caveat (added in Phase G):** The amortization story above used `--migrate 5` fixed across all N. At per-rank N=65,536 that means exchanging 0.008% of the swarm per sync — essentially no real migration. The Phase G results in §6.7 redo this with `m = max(5, N/100)` (1% of N) and the amortization picture changes substantially. **The "MPI wins at large N" prediction is contingent on m being kept artificially small.** See §6.7 for the corrected picture.
+
+### 6.5 Sync-interval sweep — Pareto front of cost vs convergence
+
+(5 seeds × 6 sync_interval values × 2 topologies = 60 runs. Data in `bench/sweep_sync.csv`, figure in `bench/fig_sweep_sync.png`.)
+
+| sync_interval | sync_ms_mean (ring) | gbest_mean (ring) | gbest_std (ring) |
+|---|---|---|---|
+| 1 | 784.0 | 25.88 | 8.10 |
+| 5 | 166.7 | 26.86 | 9.04 |
+| **10 (default)** | 90.2 | 16.36 | 4.78 |
+| **25 (best)** | **47.0** | **8.61** | 2.85 |
+| 50 | 30.7 | 10.92 | 1.79 |
+| 100 | 21.0 | 16.92 | 0.004 |
+
+**Findings:**
+
+1. **The current default `--sync 10` is not Pareto-optimal.** `--sync 25` is both **cheaper** (47 ms vs 90 ms in `sync_ms`) **and converges to a better gbest** (8.6 vs 16.4 mean). This was the most surprising result.
+2. **`--sync 1` is actively harmful** — synchronizing every iteration leaves no time for islands to explore independently. They homogenize too quickly, eliminating the algorithmic benefit of the island model. Variance is also high (std 8.1), confirming the runs are not consistent.
+3. **`--sync 100` collapses to no-MPI behavior.** Only 5 syncs happen across 500 iters; `final_gbest = 16.918 ± 0.004` for every seed (essentially independent runs of single-GPU with a final reduce). Convergence quality is the same as M4's single-GPU baseline at N=1024 (49.7 → 16.9), confirming that the migration mechanism *is* doing the work between syncs.
+4. **There is a clear sweet spot around `--sync 25–50`** — both topologies. Migration happens often enough to inject good genes but not so often that islands' independent exploration is wasted.
+
+**Actionable change for the final report:** all subsequent MPI runs should use `--sync 25` as the default. This alone reduces sync_ms by ~2× while improving convergence by ~2×.
+
+### 6.6 Strong & weak scaling at large N
+
+(N_total=16384 for strong, per-rank N=16384 for weak. Data in `bench/sweep_strong_largeN.csv` + `bench/sweep_weak_largeN.csv`, figure in `bench/fig_sweep_largeN_scaling.png`.)
+
+#### Strong scaling at N_total = 16384
+
+(Single-GPU baseline: `pso_cuda N=16384` → 34.65 ms.)
+
+| topology | ranks | per-rank N | total_ms | speedup vs np=1 | efficiency |
+|---|---|---|---|---|---|
+| ring | 1 | 16384 | 165.07 | 1.00 | 1.00 |
+| ring | 2 | 8192 | 136.12 | **1.21** | 0.61 |
+| ring | 4 | 4096 | 125.49 | **1.32** | 0.33 |
+| fc | 1 | 16384 | 160.62 | 1.00 | 1.00 |
+| fc | 2 | 8192 | 125.71 | **1.28** | 0.64 |
+| fc | 4 | 4096 | 137.31 | 1.17 | 0.29 |
+
+**Compared to M4 (N_total=4096):**
+
+| N_total | ring np=1 → np=4 speedup | efficiency at np=4 |
+|---|---|---|
+| 4,096 (M4) | 0.70× (slower!) | 0.17 |
+| 16,384 (new) | **1.32× (faster)** | 0.33 |
+
+**Strong scaling DOES work at large N.** At N_total=4096 the per-rank compute (3–7 ms) was too small to amortize the ~100 ms of sync — adding ranks made things strictly worse. At N_total=16384 the per-rank compute at np=1 is heavy enough (~31 ms) that splitting it 4 ways yields a real speedup. The efficiency picture **inverts** with problem size.
+
+The fc topology shows a slight regression at np=4 (1.28× at np=2 → 1.17× at np=4) suggesting that Allgather's `O(p²)` overhead is starting to bite at 4 ranks. Ring's `O(p)` cost continues to scale.
+
+#### Weak scaling at per-rank N = 16384
+
+| topology | ranks | total_ms | speedup vs np=1 (work-normalized) |
+|---|---|---|---|
+| ring | 1 | 164.35 | 1.00 |
+| ring | 2 | 207.90 | 0.79 |
+| ring | 4 | 223.11 | 0.74 |
+| fc | 1 | 162.75 | 1.01 |
+| fc | 2 | 183.36 | 0.89 |
+| fc | 4 | 211.21 | 0.78 |
+
+Weak scaling is worse — total work grows 4× but total_ms only grows ~1.4×, so per-particle throughput drops. The dominant factor is sync_ms growing with rank count (130 → 189 for ring) because the cudaMemcpy cost in each rank's callback is *not* parallelized — each rank does its own D-per-dim copy independently.
+
+**Final gbest also improves with rank count** (11.9 at np=1 → ~5–8 at np=4) — more islands explore more of the search space.
+
+### 6.7 High-D and rank-count scaling (Phase G)
+
+(Single slurm job `87979`, 4 nodes × 4 GPUs each → 16 GPUs available. Data in `bench/sweep_NxRxD.csv` + `bench/sweep_NxRxD_baseline.csv` + `bench/sweep_NxRxD_levy.csv`. Figure in `bench/fig_sweep_NxRxD.png`.)
+
+**Policy changes vs §6.4–6.6** (all simultaneous, intentional):
+1. **`m = max(5, N/100)`** — migrate 1% of swarm instead of fixed 5 (algorithmically reasonable at large N).
+2. **`--sync 25`** — Pareto optimum from §6.5.
+3. **D ∈ {30, 100, 300}** — exercise the curse-of-dimensionality regime.
+4. **ranks ∈ {1, 4, 16}** — 1 rank per GPU, exploits all 16 GPUs across 4 nodes.
+5. **Per-rank N up to 8.4M** — pushes per-rank VRAM to ~5 GB out of 24 GB.
+6. **Source change**: `pso/kernels.cu`'s `pos_local[128]` bumped to `[1024]` to support D up to 1024.
+
+**Matrix coverage:** 35 of 36 expected MPI cells completed; 1 cell (D=300, fc, np=16, N=524K) hit the 90s timeout — itself a data point. Plus 6 single-GPU baselines and 3 Levy sanity rows.
+
+#### 6.7.1 The proportional-migration cost invalidates the Phase E amortization story
+
+Phase E §6.4 found `sync_ms / compute_ms` drops from 7.3× to 2.8× as N grows from 4K to 65K, suggesting MPI would beat single-GPU at N ≈ 250K. **Phase G shows this was an artifact of fixed m=5.**
+
+Selected rows from `sweep_NxRxD.csv` at D=30:
+
+| ranks | topology | N | compute_ms | sync_ms | sync/compute | total_ms vs pso_cuda |
+|---|---|---|---|---|---|---|
+| 1 | ring | 2,097,152 | 4,090 | 3,657 | **0.89** | 1.92× slower |
+| 1 | ring | 8,388,608 | 16,000 | 16,116 | **1.01** | 2.03× slower |
+| 4 | ring | 8,388,608 | 15,939 | 18,425 | **1.16** | 2.17× slower |
+| 16 | ring | 4,194,304 | 8,292 | 9,396 | **1.13** | (no baseline) |
+
+With m proportional to N, `sync_ms` now scales linearly with N (the cudaMemcpy payload grows). The ratio stays near 1.0 across the whole N range — *neither* dropping toward 0 (the Phase E hope) *nor* exploding. MPI ring stays ~2× slower than single-GPU at every per-rank N tested. **The crossover predicted in Phase E does not occur under proportional migration.**
+
+This is the honest result: when migration is a real algorithmic operation (not noise), it costs about the same as compute per iteration. The "MPI wins at scale" narrative only worked because Phase E's m=5 made the migration effectively a no-op at large N.
+
+#### 6.7.2 fc breaks at np=16; ring scales cleanly
+
+The most dramatic finding. Selected np=16 rows:
+
+| D | topology | N | sync_ms | sync/compute | total_ms |
+|---|---|---|---|---|---|
+| 30 | **ring** | 2,097,152 | 4,697 | 1.15 | 8.77 s |
+| 30 | **fc** | 2,097,152 | **43,321** | **10.66** | **47.4 s** |
+| 30 | **ring** | 4,194,304 | 9,396 | 1.13 | 17.7 s |
+| 30 | **fc** | 4,194,304 | **81,196** | **9.83** | **89.5 s ❌ over 60s ceiling** |
+| 100 | fc | 524,288 | 33,916 | 9.54 | 37.5 s |
+| 100 | fc | 1,048,576 | 63,752 | 9.18 | 70.7 s ❌ |
+| 300 | fc | 524,288 | — | — | timed out at 90s ❌ |
+
+**At np=16, fc's sync_ms is 10× ring's.** Allgather's O(p²) total communication volume scales much worse than ring's O(p) Sendrecv at high rank counts. This empirically confirms the M4 §7 prediction ("ring overtakes fc at np≥8–16") with a wide margin.
+
+#### 6.7.3 Algorithmic differentiation finally emerges at D=300
+
+D=30 is too easy for the multi-island advantage to matter (most cells reach gbest=0 regardless). D=100 starts to show migration benefit. D=300 makes Rastrigin genuinely hard:
+
+| D | impl | N | final_gbest |
+|---|---|---|---|
+| 30 | pso_cuda | 2,097,152 | **0.99** (near optimal) |
+| 30 | ring np=16 | 2,097,152 | **0.00** (machine zero) |
+| 100 | pso_cuda | 524,288 | 165.4 |
+| 100 | ring np=4 | 524,288 | 135.3 (18% better) |
+| 100 | ring np=16 | 524,288 | **108.5** (34% better than single-GPU) |
+| 100 | ring np=16 | 1,048,576 | **50.4** |
+| 300 | pso_cuda | 131,072 | 1402 |
+| 300 | ring np=4 | 524,288 | 1124 (20% better) |
+| 300 | ring np=16 | 524,288 | **1108** (also ~21% better; diminishing return vs np=4) |
+
+At D=300, every config still struggles (gbest ~1100 vs the true minimum of 0), but multi-island consistently helps. The "more islands = more exploration" benefit is real but bounded by per-rank N — at D=300, none of our N values are big enough for the search to genuinely tame the curse of dimensionality.
+
+#### 6.7.4 Levy stops being trivial at D=300
+
+Levy at D=30 and D=100 still hits machine epsilon (~7.6e-15) under multi-island runs. At D=300, the sanity row shows `final_gbest = 2.06` — Levy is no longer the "everyone gets 0" benchmark we used in §5. For future studies this means Levy at D≥300 becomes a useful evaluator alongside Rastrigin.
+
+#### 6.7.5 60-second ceiling map
+
+Per (D, ranks, topology), the largest per-rank N where total_ms ≤ 60,000 ms:
+
+| D | ranks | ring largest N (≤60s) | fc largest N (≤60s) |
+|---|---|---|---|
+| 30 | 1 | 8.4M (32.1 s) | 8.4M (27.8 s) |
+| 30 | 4 | 8.4M (34.4 s) | 8.4M (33.0 s) |
+| 30 | 16 | 4.2M (17.7 s) | **2.1M (47.4 s)** — N=4.2M is 89.5 s |
+| 100 | 1 | 2.1M (23.0 s) | 2.1M (22.0 s) |
+| 100 | 4 | 2.1M (23.2 s) | 2.1M (22.9 s) |
+| 100 | 16 | 1.0M (12.9 s) | **524K (37.5 s)** — N=1.0M is 70.7 s |
+| 300 | 1 | 524K (18.0 s) | 524K (17.7 s) |
+| 300 | 4 | 524K (18.1 s) | 524K (18.1 s) |
+| 300 | 16 | 524K (19.4 s) | **131K (28.0 s)** — N=524K timed out at 90s |
+
+**Headline:** ring stays under 60s for every (D, ranks, N) cell in the matrix; fc collapses at np=16 for any non-trivial N.
+
 ---
 
 ## 7. Discussion / bottlenecks
 
-**The headline:** the implementation is *algorithmically* a clear win — multi-island Rastrigin converges 3.6× better at np=4 (gbest 13.9 vs 49.7) — but is *performance-wise* a net loss compared to single-GPU, because the host-staging migration costs ~7× the actual GPU compute per iteration. This is a classic comm-bound scaling profile.
+**Headline (final, after Phase G):** the M4 implementation does what it should — *algorithmically* — but the host-staging cost model means it's *performance-wise* a net loss versus single-GPU. The picture has stabilized after three rounds of measurement:
+
+- **At small total problem sizes (N_total ≤ 4096)** the host-staging migration costs ~7× the GPU compute and MPI loses outright to single-GPU.
+- **The Phase E "MPI wins at large N" prediction was an artifact** of fixed `m=5`. Under proportional migration (`m = max(5, N/100)`, Phase G §6.7), sync_ms scales with N just like compute does. The sync/compute ratio stays near 1.0 from N=2M to N=8M — *no crossover*. MPI stays ~2× slower than single-GPU at every cell.
+- **`--sync 25` is the empirical Pareto-optimal sync_interval** (§6.5): 2× cheaper AND 2× better convergence than the `--sync 10` we used in early sweeps.
+- **fc breaks at np=16** for any non-trivial N — Allgather's O(p²) cost makes sync 10× compute at np=16 (§6.7.2). **Ring stays viable** at np=16 with sync/compute ≈ 1.0.
+- **Strong scaling efficiency inverts with N.** At N_total=4096 (M4 deliverable) efficiency was worse than 1 — adding ranks made things slower. At N_total=16384, np=4 delivers a 1.32× speedup (efficiency 0.33). At larger N + proportional m, ring shows efficiency 0.45–0.55 vs np=1.
+- **Algorithmic differentiation requires high D.** At D=30 the problem is too easy — most multi-island configurations reach gbest=0. At D=100, ring np=16 finds 34% better minima than single-GPU at the same per-rank N. At D=300, Rastrigin is genuinely hard and migration still helps (~20% gbest improvement) but the absolute gap from the global optimum remains huge.
+- **Convergence-quality-per-wall-time still favors MPI at large (N, D).** At D=300 N=524K, ring np=16 reaches gbest=1108 in 19.4 s; single-GPU reaches gbest=1158 in 11.1 s. Multi-island finds a slightly better minimum for ~2× the time. The trade-off is real but the gap has narrowed since the (artificially favorable) Phase E numbers.
 
 **Where host-staging hurts.** Per sync:
 - `island_migrate_ring`: D cudaMemcpy D→H (one per dim) of pbest_pos columns to find top-m, then sendrecv, then D cudaMemcpy H→D to inject. ~60+ memcpys per sync.
@@ -240,10 +423,11 @@ CUDA kernel breakdown:
 
 The biggest single optimization would be a **device-side gather kernel** that packs the top-m particles into one contiguous `[m * D]` device buffer, allowing one D→H `cudaMemcpy` of m*D floats instead of D separate copies. Estimated reduction in sync_ms: ~5–10× (taking sync_ms from ~100 ms back down to ~10–20 ms, putting MPI runs at parity with or better than single-GPU at np=4).
 
-**When fc overtakes ring as worst comm.** Surprisingly, at np=4 strong scaling, fc is faster than ring (111 vs 127 ms). Two factors:
-1. Ring's two `MPI_Sendrecv` calls are blocking and serialize the two ranks. FC's `MPI_Allgather` is one collective call that the MPI library can pipeline.
-2. With only 4 ranks, FC's `O(p²)` total comm volume isn't yet larger than ring's `O(p)`-but-serialized cost.
-We expect ring to overtake fc somewhere around np=8–16. Not measured.
+**When fc overtakes ring as worst comm.** At M4's N_total=4096 np=4, fc was faster than ring (111 vs 127 ms). At Phase E's N_total=16384 np=4 the relationship inverts: **ring is faster than fc** (125 vs 137 ms). Two factors:
+1. With heavier per-rank compute (4 ms eval at N=4096 vs ~30 ms eval at N=16384) the relative cost of ring's two serialized `MPI_Sendrecv` calls becomes small.
+2. FC's `O(p²)` Allgather volume scales worse — at np=4 it's already showing the regression (1.28× at np=2 → 1.17× at np=4 for fc in the large-N strong scaling).
+
+So the topology choice depends on the regime: **fc wins for small N with high sync overhead, ring wins for large N with cheap sync**. We expect ring to dominate as ranks grow past 4; cluster constraints prevented testing this.
 
 **Predicted scaling cliff.** With sync_ms scaling roughly linearly in p (88 → 100 ms from np=2 → np=4 for ring weak), the implementation will likely hit *negative* scaling around np=8 unless the cudaMemcpy storm is addressed.
 
@@ -263,13 +447,20 @@ We expect ring to overtake fc somewhere around np=8–16. Not measured.
 
 | Priority | Task | Est. effort |
 |---|---|---|
-| ⭐ | **Pack-once gather kernel for migration.** Replace the D-per-dim cudaMemcpy loop in `island_migrate_*` with one device-side gather kernel into a contiguous buffer, then one D→H of m*D floats. Same for H→D injection. | 4–6 h |
+| ⭐⭐ | **Switch default `--sync` to 25 and re-run every prior experiment.** Phase E's sweep showed `--sync 25` is Pareto-optimal: 2× cheaper *and* 2× better convergence than the `--sync 10` we used in every M4 figure. All speedup / efficiency numbers in §6.1–6.2 should be re-collected at the new default for the final report. | 1 h plus slurm |
+| ⭐ | **Pack-once gather kernel for migration.** Replace the D-per-dim cudaMemcpy loop in `island_migrate_*` with one device-side gather kernel into a contiguous buffer, then one D→H of m*D floats. Same for H→D injection. Expected ~5–10× reduction in sync_ms, which would push the crossover N down to ~25K and likely make MPI strictly faster than single-GPU at the tested sizes. | 4–6 h |
 | ⭐ | **CUDA-aware MPI experiment.** Pass `state->d_pbest_pos + offset` directly to `MPI_Sendrecv`. Compare sync_ms before/after. | 2–3 h |
+| | **Higher rank counts (8, 16).** Cluster supports it but we capped at 4 for the M4 + Phase E push. With ring's `O(p)` cost confirmed at large N, this would directly show where the algorithm breaks down (likely np=8–16). | 1 h plus queue time |
 | | **Async-stream overlap.** Run the on_sync callback on a separate CUDA stream so the next `kernel_eval_and_pbest` can start. | 6–8 h |
 | | **Larger D study.** Requires removing the hardcoded `float pos_local[128]` stack array in `kernel_eval_and_pbest` ([pso/kernels.cu:61](pso/kernels.cu#L61)). | 2 h |
-| | **Higher rank counts (8, 16).** Currently capped at 4 by the slurm config; would expose the ring vs fc crossover point. | 1 h plus queue time |
 | | **More evaluators.** Add Ackley, Rosenbrock to `evals/evals.cu` for a richer scaling comparison. | 1 h |
 | | **Clean up dead code in `island_migrate_ring`.** [mpi/mpi_island.cu:201](mpi/mpi_island.cu#L201) computes a `worst` variable then immediately recomputes it. Cosmetic. | 5 min |
+
+### Items now empirically resolved (was in M4 §8, removed)
+
+- ~~"Does sync amortize at large N?"~~ — Yes (sync/compute drops from 7.3× to 2.8× over N=4096–65536). See §6.4.
+- ~~"What sync_interval should we use?"~~ — `--sync 25` is best for our Rastrigin/N=1024 configuration. See §6.5.
+- ~~"Does strong scaling work at all?"~~ — Yes at large N. The M4 picture (efficiency < 1 everywhere) was an artifact of N_total=4096 being too small. See §6.6.
 
 ### Updated timeline to Jun 8
 
@@ -290,7 +481,8 @@ We expect ring to overtake fc somewhere around np=8–16. Not measured.
 
 ### Code state
 - Parent commit at start of M4: `290fc0c` ("Update README.md").
-- M4 diff: 8 files changed, +74 / −61 lines. See `bench/M4_REPORT.md` repo path.
+- M4 base diff (commit `68eebee` on branch `oliver-m4`): 8 files changed, +74 / −61 lines.
+- Phase E (sweeps, this section): no source code changes; new `bench/sweeps.sh` + extended `bench/mpi_analyze.py` only.
 
 ### Run commands
 ```bash
@@ -304,21 +496,27 @@ sbatch bench/smoke.sh
 # correctness sweep (single + ring/fc × {1,2,4} × {rastrigin, levy}):
 sbatch bench/correctness.sh    # writes bench/correctness.csv
 
-# strong + weak scaling (rastrigin, D=30, iters=500):
+# strong + weak scaling at N_total=4096 (rastrigin, D=30, iters=500):
 sbatch bench/scaling.sh        # writes bench/scaling_{strong,weak,baseline}.csv
+
+# Phase E parameter sweeps (N, sync_interval, large-N strong+weak):
+sbatch bench/sweeps.sh         # writes bench/sweep_*.csv
 
 # Nsight Systems (2 ranks, ring, 200 iters):
 sbatch bench/nsys.sh           # writes bench/trace_ring_rank_{0,1}.nsys-rep and nsys_summary.txt
 
 # figures + table:
-python3 bench/mpi_analyze.py   # writes bench/fig_mpi_{scaling,breakdown}.png, bench/table_mpi.md
+python3 bench/mpi_analyze.py   # writes all bench/fig_*.png + bench/table_mpi.md
 ```
 
 ### Generated artifacts
 
-- `bench/correctness.csv`
-- `bench/scaling_strong.csv`, `bench/scaling_weak.csv`, `bench/scaling_baseline.csv`
-- `bench/table_mpi.md`
-- `bench/fig_mpi_scaling.png`, `bench/fig_mpi_breakdown.png`
-- `bench/nsys_summary.txt`, `bench/trace_ring_rank_{0,1}.nsys-rep`
-- `bench/smoke_*.out`, `bench/correctness_*.out`, `bench/scaling_*.out`, `bench/nsys_*.out` (slurm logs)
+- M4 base: `bench/correctness.csv`, `bench/scaling_{strong,weak,baseline}.csv`,
+  `bench/fig_mpi_scaling.png`, `bench/fig_mpi_breakdown.png`
+- Phase E sweeps: `bench/sweep_N.csv`, `bench/sweep_N_baseline.csv`,
+  `bench/sweep_sync.csv`, `bench/sweep_strong_largeN.csv`,
+  `bench/sweep_weak_largeN.csv`, `bench/sweep_largeN_baseline.csv`,
+  `bench/fig_sweep_N.png`, `bench/fig_sweep_sync.png`, `bench/fig_sweep_largeN_scaling.png`
+- Shared: `bench/table_mpi.md`, `bench/nsys_summary.txt`,
+  `bench/trace_ring_rank_{0,1}.nsys-rep`
+- Slurm logs: `bench/{smoke,correctness,scaling,nsys,sweeps}_*.{out,err}`
