@@ -3,25 +3,7 @@
 #include <mpi.h>
 #include "../pso/pso.h"
 
-/**
- * @brief Snapshot of a single island's device-side PSO state,
- *        passed into SyncCallback functions by the MPI main loop.
- *
- * @param N             Number of particles on this island.
- * @param D             Problem dimensionality.
- * @param d_pbest_pos   Device ptr, pbest positions [D * N] SoA.
- * @param d_pbest_fit   Device ptr, pbest fitnesses [N].
- * @param d_gbest_val   Device ptr, scalar global best fitness.
- * @param d_gbest_idx   Device ptr, scalar index of global best particle.
- */
-typedef struct {
-    int    N;
-    int    D;
-    float* d_pbest_pos;  //[D * N] SoA
-    float* d_pbest_fit;  //[N]
-    float* d_gbest_val;  //scalar
-    int*   d_gbest_idx;  //scalar
-} IslandState;
+// IslandState lives in pso/pso.h — re-used here without redefinition.
 
 /**
  * @brief Per-island MPI context, passed as on_sync_data through PSOConfig.
@@ -46,7 +28,6 @@ typedef struct {
     int      rank;
     int      n_ranks;
     int      n_migrate;
-    int      sync_interval;   //sync interval for MPI
     float*   h_send_pos;  //[n_migrate * D]
     float*   h_send_fit;  //[n_migrate]
     float*   h_recv_pos;  //[n_migrate * D]

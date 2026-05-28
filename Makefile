@@ -51,15 +51,17 @@ LIB_OBJS  := $(PSO_OBJS) $(EVAL_OBJS)
 INCLUDES  := -I$(PSO_DIR) -I$(EVAL_DIR) -I$(SRC_DIR)
 ARCHFLAGS := -gencode arch=compute_$(SM),code=sm_$(SM)
 
-#query MPI compile/link flags from the MPI wrapper
-MPI_INCLUDES := -I/opt/ohpc/pub/mpi/openmpi4-gnu12/4.1.6/include
-MPI_LDFLAGS  := -L/opt/ohpc/pub/mpi/openmpi4-gnu12/4.1.6/lib -lmpi
+#query MPI compile/link flags from the wrapper so we adapt to whichever
+#MPI module is loaded (openmpi, hpcx, mpich, etc). Keep only the -I and -L
+#options — nvcc handles those natively; the wrapper's -pthread / -Wl,-rpath
+#noise is dropped for portability and rediscovered automatically by -lmpi.
+MPI_INC := $(filter -I%,$(shell mpicxx --showme:compile 2>/dev/null))
+MPI_LIB := $(filter -L%,$(shell mpicxx --showme:link    2>/dev/null)) -lmpi
 
 NVCCFLAGS := -std=$(STD) $(ARCHFLAGS) $(INCLUDES) \
              --expt-relaxed-constexpr \
              -Xcompiler -Wall,-Wextra
-#initialize MPI flags
-NVCCFLAGS_MPI := $(NVCCFLAGS) $(MPI_INCLUDES)
+NVCCFLAGS_MPI := $(NVCCFLAGS) $(MPI_INC)
 
 CXXFLAGS  := -std=$(STD) -O3 -Wall -Wextra
 
@@ -73,7 +75,7 @@ else
 endif
 
 LDLIBS     := -lcurand
-LDLIBS_MPI := -lcurand $(MPI_LDFLAGS)
+LDLIBS_MPI := -lcurand $(MPI_LIB)
 
 # ---- rules -------------------------------------------------------------------
 .PHONY: all mpi clean run ring fc cpu bench-cpu debug release info
@@ -151,8 +153,9 @@ info:
 	@echo "EVAL_SRCS     = $(EVAL_SRCS)"
 	@echo "MPI_SRCS      = $(MPI_SRCS)"
 	@echo "LIB_OBJS      = $(LIB_OBJS)"
-	@echo "MPI_CFLAGS    = $(MPI_CFLAGS)"
-	@echo "MPI_LDFLAGS   = $(MPI_LDFLAGS)"
+	@echo "MPI_INC       = $(MPI_INC)"
+	@echo "MPI_LIB       = $(MPI_LIB)"
+	@echo "LDLIBS_MPI    = $(LDLIBS_MPI)"
 	@echo "NVCCFLAGS     = $(NVCCFLAGS)"
 	@echo "NVCCFLAGS_MPI = $(NVCCFLAGS_MPI)"
 
