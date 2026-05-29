@@ -68,6 +68,8 @@ The performance/scaling work focuses on the large-N regime (per-rank N up to 8M,
 
 The earlier M4-baseline correctness sweep at N=1024, D=30, sync=10, m=5 is preserved verbatim in Appendix B. This section uses the same parameter regime as §3 — proportional migration, sync=25, 16 ranks — and the same problem sizes that §3.6's matrix exercises.
 
+![Convergence vs rank count for both correctness cells. Ring (blue, circles) and fc (red, squares) for D=100 left, D=300 right. Horizontal gray line is the pso_cuda single-GPU baseline. Multi-island beats single-GPU at every (D, ranks≥2) cell with substantial margin at D=100. The fc np=1 D=300 outlier (gbest=3,359, annotated arrow) is the slot-0 overwrite anomaly discussed below. Source: bench/correctness_largeN.csv → bench/plot_correctness.py.](fig_correctness.png)
+
 ### 2.1 Rastrigin at D=100, per-rank N=524,288
 
 Single-GPU baseline `pso_cuda --N 524288 --D 100`: **total_ms = 3,643**, final_gbest = **165.43**.
@@ -134,7 +136,9 @@ Four invariants checked programmatically against `bench/correctness_largeN.csv`:
 
 ### 3.1 Strong scaling at N_total = 8M, D = 100
 
-*(`bench/sweep_largeN_strong.sh`, slurm job 88016. Data: `bench/sweep_largeN_strong.csv` + `bench/sweep_largeN_strong_baseline.csv`. Figure: `bench/fig_largeN_strong_weak.png`, top row. Fixed: rastrigin, sync=25, m=max(5, N/100), iters=500, seed=42, per-rank N = N_total / ranks.)*
+*(`bench/sweep_largeN_strong.sh`, slurm job 88016. Data: `bench/sweep_largeN_strong.csv` + `bench/sweep_largeN_strong_baseline.csv`. Figure: `bench/fig_strong_scaling.png` (produced by `bench/plot_strong_scaling.py`). Fixed: rastrigin, sync=25, m=max(5, N/100), iters=500, seed=42, per-rank N = N_total / ranks.)*
+
+![Strong scaling at N_total=8M, D=100. Left: speedup vs ranks, with two baselines per topology (vs MPI np=1 solid/dashed, vs pso_cuda single-GPU dotted). Ring at np=16 delivers 13.65× speedup over np=1 and 8.11× over pso_cuda. Diagonal gray line is ideal y=p. Right: parallel efficiency = speedup_vs_mpi1 / p. Ring holds 0.85 efficiency at np=16; fc collapses past np=4.](fig_strong_scaling.png)
 
 **Single-GPU baseline:** `pso_cuda --N 8388608 --D 100` → **total_ms = 54,529** ms, final_gbest = 60.85.
 
@@ -161,7 +165,9 @@ Four invariants checked programmatically against `bench/correctness_largeN.csv`:
 
 ### 3.2 Weak scaling at per-rank N = 8M, D = 100
 
-*(`bench/sweep_largeN_weak.sh`, slurm job 88017. Data: `bench/sweep_largeN_weak.csv`. Figure: `bench/fig_largeN_strong_weak.png`, bottom row. Same fixed params as §3.1. Per-rank N stays at 8,388,608; total particles grow from 8M → 134M as ranks scale 1 → 16.)*
+*(`bench/sweep_largeN_weak.sh`, slurm job 88017. Data: `bench/sweep_largeN_weak.csv`. Figure: `bench/fig_weak_scaling.png` (produced by `bench/plot_weak_scaling.py`). Same fixed params as §3.1. Per-rank N stays at 8,388,608; total particles grow from 8M → 134M as ranks scale 1 → 16.)*
+
+![Weak scaling at per-rank N=8M, D=100. Left: total runtime (log scale) across rank counts. Ring stays near-flat (91 sec → 101 sec from np=1 to np=16, +11%); fc collapses to 565 sec at np=16. Right: weak-scaling efficiency = T(np=1) / T(np=p). Ring holds 0.90 at np=16, fc drops to 0.15.](fig_weak_scaling.png)
 
 | ranks | topology | per-rank N | eval_ms | sync_ms | total_ms | efficiency (T_1/T_p) | final_gbest |
 |---|---|---|---|---|---|---|---|
@@ -185,7 +191,9 @@ Four invariants checked programmatically against `bench/correctness_largeN.csv`:
 
 ### 3.3 Comm vs compute breakdown at large N
 
-*(From `bench/sweep_largeN_strong.csv` and `bench/sweep_largeN_weak.csv`. Figure: `bench/fig_largeN_strong_weak.png`, bottom-right panel.)*
+*(From `bench/sweep_largeN_strong.csv` and `bench/sweep_largeN_weak.csv`. Figure: `bench/fig_breakdown.png` (produced by `bench/plot_breakdown.py`).)*
+
+![Per-component time breakdown across all 20 configs from §3.1 (strong) and §3.2 (weak). Stack components from bottom: eval_ms (blue), reduce_ms (green), update_ms (red), sync_ms (purple). The fc np=16 weak bar towers over everything at 565 sec — almost entirely sync. Ring at the same configuration is 101 sec with sync and compute roughly balanced.](fig_breakdown.png)
 
 At large N + D the ratio that dominated the M4 baseline (sync ≈ 28× compute) inverts:
 
@@ -259,7 +267,9 @@ Levy at D=30 and D=100 still hits machine epsilon (~7.6e-15) under multi-island 
 
 ### 3.7 Nsight Systems at large N
 
-*(`bench/nsys_largeN.sh`, slurm job 88018. Configuration: ring np=4, N=2M, D=100, iters=100, sync=25, m=20971. Data: `bench/trace_largeN_rank_{0..3}.nsys-rep`, summary: `bench/nsys_summary_largeN.txt`. Compare against Appendix B.4 which profiled the same code at N=1024.)*
+*(`bench/nsys_largeN.sh`, slurm job 88018. Configuration: ring np=4, N=2M, D=100, iters=100, sync=25, m=20971. Data: `bench/trace_largeN_rank_{0..3}.nsys-rep`, summary: `bench/nsys_summary_largeN.txt`. Figure: `bench/fig_nsight_comparison.png` (produced by `bench/plot_nsight_comparison.py`). Compare against Appendix B.4 which profiled the same code at N=1024.)*
+
+![Nsight Systems regime inversion. Left: small-N M4 baseline (ring np=2, N=1024, D=30, 200 iters) — cudaMemcpy total is 28.4 ms, dominating the 3.8 ms of GPU kernel time by 7.5×. Right: large-N regime (ring np=4, N=2M, D=100, 100 iters) — GPU kernel time is now 3,013 ms, exceeding the 1,310 ms of cudaMemcpy by 2.3×. Host-staging is no longer the bottleneck once N is in the millions; the cudaDeviceSynchronize segments in the large-N CUDA-API column are the pre-sync pipeline drains, not productive work.](fig_nsight_comparison.png)
 
 CUDA API breakdown (rank 0):
 

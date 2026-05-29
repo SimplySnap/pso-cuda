@@ -40,7 +40,13 @@ python3 bench/analyze.py        # M3 single-GPU figures (carryover, optional)
 | `nsys_largeN.sh` | Phase H3: nsys profile at N=2M, D=100, ring np=4, iters=100 | 1 node, 4 ranks |
 | `nsys.sh` | M4 small-N nsys: `trace_ring_rank_*.nsys-rep` + `nsys_summary.txt` | 2 nodes, 2 ranks |
 | `analyze.py` | M3 single-GPU figures (legacy) | login node, ~5 sec |
-| `mpi_analyze.py` | All MPI figures + `table_mpi.md` | login node, ~15 sec |
+| `mpi_analyze.py` | All older MPI figures + `table_mpi.md` | login node, ~15 sec |
+| `plot_correctness.py` | `fig_correctness.png` for report §2 (convergence vs ranks at D=100 and D=300) | login, ~2 sec |
+| `plot_strong_scaling.py` | `fig_strong_scaling.png` for report §3.1 (speedup + efficiency) | login, ~2 sec |
+| `plot_weak_scaling.py` | `fig_weak_scaling.png` for report §3.2 (total_ms + efficiency) | login, ~2 sec |
+| `plot_breakdown.py` | `fig_breakdown.png` for report §3.3 (20-bar comm/compute stack) | login, ~2 sec |
+| `plot_nsight_comparison.py` | `fig_nsight_comparison.png` for report §3.7 (small-N vs large-N regime) | login, ~2 sec |
+| `_plot_style.py` | Shared `STYLE` dict imported by all `plot_*.py` scripts (not run directly) | — |
 
 ## Data files
 
@@ -100,7 +106,12 @@ This is documented as `MPI_CSV_COLS` at the top of `mpi_analyze.py`.
 | `fig_sweep_sync.png` | sweep_sync.csv | Phase E sync Pareto: sync_ms vs gbest with ±std bands |
 | `fig_sweep_largeN_scaling.png` | sweep_{strong,weak}_largeN.csv | rank scaling at N_total=16384 |
 | `fig_sweep_NxRxD.png` | sweep_NxRxD.csv | Phase G: 3 panels (D=30/100/300), total_ms vs N with 60s ceiling |
-| `fig_largeN_strong_weak.png` | sweep_largeN_{strong,weak}.csv | Phase H: 2×2 grid (strong total_ms, strong speedup, weak total_ms, breakdown stacked-bar) |
+| `fig_largeN_strong_weak.png` | sweep_largeN_{strong,weak}.csv | Older 2×2 grid; superseded by `fig_strong_scaling.png` + `fig_weak_scaling.png` + `fig_breakdown.png` |
+| `fig_correctness.png` | `correctness_largeN.csv` via `plot_correctness.py` | Report §2: rastrigin convergence vs ranks for D=100 and D=300, with pso_cuda baseline |
+| `fig_strong_scaling.png` | `sweep_largeN_strong.csv` + baseline via `plot_strong_scaling.py` | Report §3.1: speedup (4 series with two baselines) + efficiency vs ranks |
+| `fig_weak_scaling.png` | `sweep_largeN_weak.csv` via `plot_weak_scaling.py` | Report §3.2: total_ms (log-y) + weak efficiency vs ranks |
+| `fig_breakdown.png` | strong + weak CSVs via `plot_breakdown.py` | Report §3.3: 20 stacked bars (10 strong + 10 weak) of eval/reduce/update/sync |
+| `fig_nsight_comparison.png` | hardcoded numbers from nsys summaries via `plot_nsight_comparison.py` | Report §3.7: small-N vs large-N CUDA-API and kernel breakdowns |
 
 ## Profiling traces
 
