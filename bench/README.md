@@ -30,7 +30,8 @@ python3 bench/analyze.py        # M3 single-GPU figures (carryover, optional)
 | Script | What it produces | Resources |
 |---|---|---|
 | `smoke.sh` | One MPI run per topology to verify sync hook fires | 1 node, 2 ranks |
-| `correctness.sh` | `correctness.csv` — single + ring/fc × {1,2,4} for rastrigin/levy | 4 nodes, 4 ranks |
+| `correctness.sh` | `correctness.csv` — small-N M4 baseline: single + ring/fc × {1,2,4} for rastrigin/levy at N=1024 D=30 sync=10 m=5 | 4 nodes, 4 ranks |
+| `correctness_largeN.sh` | `correctness_largeN.csv` — bigger-params correctness: D=100 N=524K and D=300 N=131K, ring/fc × {1,2,4,8,16}, sync=25, m=N/100 | 4 nodes, 16 ranks |
 | `scaling.sh` | `scaling_{strong,weak,baseline}.csv` — M4 N_total=4096 study | 4 nodes, 4 ranks |
 | `sweeps.sh` | Phase E: `sweep_N.csv`, `sweep_sync.csv`, `sweep_{strong,weak}_largeN.csv` | 4 nodes, 4 ranks |
 | `sweep_NxRxD.sh` | Phase G: `sweep_NxRxD.csv` + baseline + levy. Uses sync=25, m=N/100 | 4 nodes, 16 ranks (1/GPU) |
@@ -47,7 +48,8 @@ python3 bench/analyze.py        # M3 single-GPU figures (carryover, optional)
 
 | CSV | What |
 |---|---|
-| `correctness.csv` | gbest + total_ms per (impl, topology, ranks, evaluator) |
+| `correctness.csv` | gbest + total_ms per (impl, topology, ranks, evaluator) — M4 small-N baseline |
+| `correctness_largeN.csv` | same schema as `correctness.csv`, at D=100/300 with sync=25 and proportional m. This is the §2 dataset in the report. |
 | `scaling_strong.csv` | N_total=4096 split across ranks (ring + fc, np=1,2,4) |
 | `scaling_weak.csv` | per-rank N=1024 fixed (ring + fc, np=1,2,4) |
 | `scaling_baseline.csv` | pso_cuda single-GPU at the relevant N values |
