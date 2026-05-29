@@ -269,7 +269,7 @@ Levy at D=30 and D=100 still hits machine epsilon (~7.6e-15) under multi-island 
 
 *(`bench/nsys_largeN.sh`, slurm job 88018. Configuration: ring np=4, N=2M, D=100, iters=100, sync=25, m=20971. Data: `bench/trace_largeN_rank_{0..3}.nsys-rep`, summary: `bench/nsys_summary_largeN.txt`. Figure: `bench/fig_nsight_comparison.png` (produced by `bench/plot_nsight_comparison.py`). Compare against Appendix B.4 which profiled the same code at N=1024.)*
 
-![Nsight Systems regime inversion. Left: small-N M4 baseline (ring np=2, N=1024, D=30, 200 iters) — cudaMemcpy total is 28.4 ms, dominating the 3.8 ms of GPU kernel time by 7.5×. Right: large-N regime (ring np=4, N=2M, D=100, 100 iters) — GPU kernel time is now 3,013 ms, exceeding the 1,310 ms of cudaMemcpy by 2.3×. Host-staging is no longer the bottleneck once N is in the millions; the cudaDeviceSynchronize segments in the large-N CUDA-API column are the pre-sync pipeline drains, not productive work.](fig_nsight_comparison.png)
+![Nsight Systems regime inversion. Each panel shows the same two bars (total cudaMemcpy time vs total GPU kernel time) on a per-panel linear x-axis so the within-regime ratio is immediately visible. Left: small-N M4 baseline — cudaMemcpy 7.5× kernels (host-staging is the bottleneck). Right: large-N regime — kernels 2.3× cudaMemcpy (compute dominates; the host-staging cost has been amortized). The per-component breakdown (which kernels, which API calls) is in the table at the top of §3.7. Figure: `bench/fig_nsight_comparison.png` from `bench/plot_nsight_comparison.py`.](fig_nsight_comparison.png)
 
 CUDA API breakdown (rank 0):
 
