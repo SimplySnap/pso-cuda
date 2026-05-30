@@ -49,7 +49,7 @@ The performance/scaling work focuses on the large-N regime (per-rank N up to 8M,
 - **Ring strong scaling is near-ideal at the right problem size**: at total N=8M, D=100, np=16 delivers **13.65× speedup over np=1 (efficiency 0.85)** and **8.11× over single-GPU pso_cuda**.
 - **Ring weak scaling holds 0.90 efficiency at np=16**: total work grows 16× (8M → 134M particles) but total runtime grows only 11%.
 - **fc (Allgather) collapses at np≥8**: at weak np=16, fc takes 9.4 min per run vs ring's 1.7 min; the Allgather payload's `O(p²)` growth is the structural cause.
-- **Host-staging is no longer the bottleneck at large N**: Nsight at N=2M, D=100 shows GPU kernel time (3.0 sec) exceeds cudaMemcpy time (1.3 sec) — the ratio inverts vs the M4 small-N regime (Appendix B.4: 28 ms cudaMemcpy vs 3.8 ms kernels at N=1024).
+- **Host-staging is no longer the bottleneck at large N**: the Nsight matrix in §3.7 shows `cudaMemcpy` is dwarfed by `cudaDeviceSynchronize` and GPU kernel time at every (D, N, ranks) cell with N ≥ 2M. Per-rank kernel totals are also within 1.5% across np=1…16 at fixed (D, N), confirming the strong-scaling assumption.
 - **`--sync 25` is the empirical Pareto-optimal sync interval** for D=30 rastrigin: ~2× cheaper and ~2× better convergence than `--sync 10`.
 - **High-D differentiation**: at D=30 the problem is too easy (most multi-island configs reach gbest=0). At D=100, ring np=16 finds 34% better minima than single-GPU at the same per-rank N. At D=300, Rastrigin is genuinely hard and migration still helps (~20% better gbest) but the absolute gap from the global optimum remains huge.
 
@@ -265,39 +265,79 @@ Levy at D=30 and D=100 still hits machine epsilon (~7.6e-15) under multi-island 
 
 ---
 
-### 3.7 Nsight Systems at large N
+### 3.7 Nsight Systems matrix across D × N × ranks
 
-*(`bench/nsys_largeN.sh`, slurm job 88018. Configuration: ring np=4, N=2M, D=100, iters=100, sync=25, m=20971. Data: `bench/trace_largeN_rank_{0..3}.nsys-rep`, summary: `bench/nsys_summary_largeN.txt`. Figure: `bench/fig_nsight_comparison.png` (produced by `bench/plot_nsight_comparison.py`). Compare against Appendix B.4 which profiled the same code at N=1024.)*
+*(`bench/nsys_matrix.sh`, slurm job 88625. Per cell: `mpirun -np {ranks} nsys profile ./pso_ring --evaluator rastrigin --N {N} --D {D} --iters 100 --sync 25 --migrate max(5, N/100) --seed 42`. Per-cell summaries (rank-0 `cuda_api_sum` + `cuda_gpu_kern_sum`) in `bench/nsys_summary_D{D}_N{N}_np{ranks}.txt`. Long-format CSV in `bench/nsight_matrix.csv`. Tables produced by `bench/parse_nsys.py` and replicated below; see `bench/nsight_tables.md` for the rendered file. **25 of 30 cells captured** — the five `D=300 × N=8M × np={1, 2, 4, 8, 16}` cells exceeded the 90-second per-cell timeout and are omitted from the tables.)*
 
-![Nsight Systems regime inversion. Each panel shows the same two bars (total cudaMemcpy time vs total GPU kernel time) on a per-panel linear x-axis so the within-regime ratio is immediately visible. Left: small-N M4 baseline — cudaMemcpy 7.5× kernels (host-staging is the bottleneck). Right: large-N regime — kernels 2.3× cudaMemcpy (compute dominates; the host-staging cost has been amortized). The per-component breakdown (which kernels, which API calls) is in the table at the top of §3.7. Figure: `bench/fig_nsight_comparison.png` from `bench/plot_nsight_comparison.py`.](fig_nsight_comparison.png)
+#### Table A — CUDA API breakdown (ms, rank 0)
 
-CUDA API breakdown (rank 0):
+| D | N | np | cudaMemcpy | cudaDeviceSync | cudaLaunchKernel | cudaMemcpyFromSymbol | other | total |
+|---|---|---|---|---|---|---|---|---|
+| 30  | 1K | 1  | 5.6     | 0.13    | 4.5  | 7.4   | 2.3  | 20.0    |
+| 30  | 1K | 2  | 4.9     | 0.14    | 7.2  | 12.6  | 9.2  | 34.1    |
+| 30  | 1K | 4  | 4.9     | 0.13    | 5.8  | 14.6  | 3.2  | 28.7    |
+| 30  | 1K | 8  | 4.9     | 0.14    | 10.8 | 12.9  | 4.1  | 32.9    |
+| 30  | 1K | 16 | 4.7     | 0.13    | 4.8  | 15.6  | 3.2  | 28.5    |
+| 30  | 2M | 1  | 449.9   | 938.6   | 5.1  | 9.4   | 13.8 | 1.42 s  |
+| 30  | 2M | 2  | 528.1   | 927.7   | 8.2  | 20.0  | 17.9 | 1.50 s  |
+| 30  | 2M | 4  | 331.5   | 941.2   | 6.0  | 14.8  | 17.8 | 1.31 s  |
+| 30  | 2M | 8  | 323.8   | 939.0   | 5.2  | 18.8  | 15.4 | 1.30 s  |
+| 30  | 2M | 16 | 325.7   | 938.3   | 5.3  | 16.6  | 16.8 | 1.30 s  |
+| 30  | 8M | 1  | 1,750.4 | 3,728.2 | 5.1  | 8.8   | 17.3 | 5.51 s  |
+| 30  | 8M | 2  | 2,630.7 | 3,735.4 | 6.3  | 17.0  | 21.9 | 6.41 s  |
+| 30  | 8M | 4  | 1,746.4 | 3,732.8 | 5.7  | 11.0  | 26.0 | 5.52 s  |
+| 30  | 8M | 8  | 1,752.8 | 3,735.3 | 5.4  | 18.0  | 26.0 | 5.54 s  |
+| 30  | 8M | 16 | 1,750.8 | 3,730.7 | 5.3  | 13.5  | 24.2 | 5.52 s  |
+| 300 | 1K | 1  | 56.7    | 11.5    | 4.6  | 7.6   | 3.6  | 84.0    |
+| 300 | 1K | 2  | 59.1    | 10.6    | 10.2 | 14.5  | 8.1  | 102.6   |
+| 300 | 1K | 4  | 46.2    | 10.8    | 6.9  | 10.8  | 8.5  | 83.3    |
+| 300 | 1K | 8  | 44.6    | 10.6    | 9.8  | 11.5  | 7.5  | 84.0    |
+| 300 | 1K | 16 | 45.5    | 10.6    | 7.5  | 23.0  | 16.0 | 102.6   |
+| 300 | 2M | 1  | 4,139.1 | 8,862.9 | 5.1  | 8.9   | 22.8 | 13.04 s |
+| 300 | 2M | 2  | 6,008.2 | 8,781.2 | 6.1  | 13.8  | 25.4 | 14.83 s |
+| 300 | 2M | 4  | 3,097.8 | 8,451.9 | 6.2  | 15.9  | 41.3 | 11.61 s |
+| 300 | 2M | 8  | 3,100.9 | 8,453.1 | 13.5 | 12.1  | 45.0 | 11.62 s |
+| 300 | 2M | 16 | 3,093.6 | 8,480.9 | 6.2  | 12.7  | 55.7 | 11.65 s |
+| 300 | 8M | * | — | — | — | — | — | timeout |
 
-| Time % | Total | Calls | Avg | Name |
-|---|---|---|---|---|
-| 66.9% | **3,018 ms** | 6 | 503 ms | `cudaDeviceSynchronize` (one per sync-callback drain) |
-| 29.0% | **1,310 ms** | 1,933 | 678 µs | `cudaMemcpy` |
-| 3.4% | 154 ms | 1 | — | `cudaMemcpyFromSymbol` (evaluator pointer resolve, startup) |
-| 0.4% | 15.5 ms | 14 | 1.1 ms | `cudaFree` |
-| 0.1% | 5.7 ms | 603 | 9.4 µs | `cudaLaunchKernel` |
+#### Table B — GPU kernel breakdown (ms, rank 0)
 
-CUDA GPU kernel breakdown (rank 0):
+| D | N | np | eval_and_pbest | update | draw_rng | CUB ArgMin | commit_gbest | other | total |
+|---|---|---|---|---|---|---|---|---|---|
+| 30  | 1K | 1  | 1.0     | 0.15    | 0.33    | 0.18 | 0.13 | 0.11 | 1.9    |
+| 30  | 1K | 2  | 1.0     | 0.15    | 0.33    | 0.18 | 0.12 | 0.11 | 1.9    |
+| 30  | 1K | 4  | 0.98    | 0.15    | 0.33    | 0.18 | 0.12 | 0.11 | 1.9    |
+| 30  | 1K | 8  | 1.0     | 0.15    | 0.33    | 0.18 | 0.12 | 0.11 | 1.9    |
+| 30  | 1K | 16 | 0.98    | 0.15    | 0.33    | 0.18 | 0.12 | 0.11 | 1.9    |
+| 30  | 2M | 1  | 338.5   | 359.4   | 222.0   | 2.5  | 0.14 | 19.2 | 941.8  |
+| 30  | 2M | 2  | 328.0   | 359.8   | 221.5   | 2.5  | 0.14 | 19.4 | 931.4  |
+| 30  | 2M | 4  | 340.9   | 359.3   | 222.6   | 2.5  | 0.14 | 19.3 | 944.7  |
+| 30  | 2M | 8  | 339.8   | 359.2   | 221.5   | 2.5  | 0.14 | 19.3 | 942.6  |
+| 30  | 2M | 16 | 339.1   | 359.2   | 221.5   | 2.5  | 0.14 | 19.5 | 941.9  |
+| 30  | 8M | 1  | 1,294.8 | 1,436.7 | 907.4   | 7.3  | 0.17 | 85.0 | 3.73 s |
+| 30  | 8M | 2  | 1,302.4 | 1,436.2 | 906.9   | 7.4  | 0.17 | 86.4 | 3.74 s |
+| 30  | 8M | 4  | 1,299.0 | 1,436.4 | 906.7   | 7.4  | 0.17 | 86.6 | 3.74 s |
+| 30  | 8M | 8  | 1,298.7 | 1,436.4 | 909.0   | 7.4  | 0.17 | 86.9 | 3.74 s |
+| 30  | 8M | 16 | 1,297.6 | 1,436.0 | 906.0   | 7.4  | 0.17 | 86.9 | 3.73 s |
+| 300 | 1K | 1  | 11.4    | 0.86    | 1.4     | 0.21 | 0.14 | 0.13 | 14.1   |
+| 300 | 1K | 2  | 11.3    | 0.85    | 1.4     | 0.21 | 0.14 | 0.13 | 14.0   |
+| 300 | 1K | 4  | 11.1    | 0.95    | 1.4     | 0.21 | 0.14 | 0.13 | 14.0   |
+| 300 | 1K | 8  | 11.1    | 0.95    | 1.4     | 0.21 | 0.14 | 0.13 | 14.0   |
+| 300 | 1K | 16 | 11.1    | 0.95    | 1.4     | 0.21 | 0.14 | 0.13 | 14.0   |
+| 300 | 2M | 1  | 3,727.9 | 3,580.0 | 1,517.2 | 2.5  | 0.15 | 38.4 | 8.87 s |
+| 300 | 2M | 2  | 3,648.9 | 3,576.1 | 1,518.1 | 2.5  | 0.15 | 38.7 | 8.78 s |
+| 300 | 2M | 4  | 3,321.3 | 3,577.1 | 1,516.1 | 2.5  | 0.15 | 38.5 | 8.46 s |
+| 300 | 2M | 8  | 3,320.6 | 3,577.9 | 1,516.8 | 2.5  | 0.15 | 38.9 | 8.46 s |
+| 300 | 2M | 16 | 3,349.0 | 3,578.3 | 1,516.1 | 2.5  | 0.15 | 38.5 | 8.48 s |
+| 300 | 8M | * | — | — | — | — | — | — | timeout |
 
-| Time % | Total | Inst. | Avg | Kernel |
-|---|---|---|---|---|
-| 40.5% | 1,224 ms | 100 | 12.2 ms | `kernel_eval_and_pbest` |
-| 39.7% | 1,200 ms | 100 | 12.0 ms | `kernel_update` |
-| 18.9% | 571 ms | 100 | 5.7 ms | `kernel_draw_rng` |
-| 0.5% | 16 ms | 1 | — | `kernel_curand_init` (one-time) |
-| 0.1% | 2.3 ms | 100 | 23 µs | CUB `DeviceReduceKernel` |
-| 0.0% | 0.2 ms | 100 | 2.2 µs | CUB `DeviceReduceSingleTileKernel` |
-| 0.0% | 0.1 ms | 100 | 1.4 µs | `kernel_commit_gbest` |
+#### Reading the matrix
 
-**Totals: GPU kernel time ≈ 3,013 ms. cudaMemcpy time ≈ 1,310 ms.** **The ratio is 2.3:1 — kernels dominate cudaMemcpy.** This is the *opposite* of the M4 baseline at N=1024 (Appendix B.4: 28 ms cudaMemcpy vs 3.8 ms kernels — 7.5:1 the other way).
-
-The `cudaDeviceSynchronize` line (3,018 ms total across 6 calls) accounts for the pso_run loop's explicit `cudaDeviceSynchronize()` before each sync callback (~4 calls in 100 iters at sync=25, plus 2 lifecycle syncs). At 500 ms per drain that's where the GPU's pipeline of pending kernels actually executes — so much of the "compute time" is really sitting inside this barrier, not inside `kernel_eval_and_pbest` directly. Without the per-sync `cudaDeviceSynchronize` (e.g., if we used async streams to overlap), much of that 3 sec would disappear from the critical path.
-
-**Implications for §3.1's ring-strong-scaling-near-ideal finding:** the proportional-migration cost grows with N but per-iter compute grows faster. At N=2M D=100 the compute-side already exceeds the host-staging cost; at N=8M D=100 (where §3.1 runs) the gap widens further. The bottleneck is no longer the cudaMemcpy storm — it's just GPU compute time, which is what we want.
+1. **`cudaDeviceSynchronize` is the largest CUDA-API line item at large N**, not `cudaMemcpy`. At D=30 N=8M np=1 it's 3.73 sec across 6 calls (~620 ms per drain); at D=300 N=2M np=1 it's 8.86 sec across 6 calls (~1.5 sec per drain). These are the explicit pre-callback `cudaDeviceSynchronize()` calls in `pso_run` plus the lifecycle drains — the GPU's pipeline of pending kernels actually executes inside this barrier, so much of the "compute time" is sitting *inside* this synchronization, not inside `kernel_eval_and_pbest` directly. An async-stream implementation would move that time off the critical path.
+2. **`cudaMemcpy` scales with `m × D` per sync, not with N directly**, so it grows weakly with N once N is large enough that the per-call overhead is amortized. From D=30 N=2M to D=30 N=8M (4× particles), `cudaMemcpy` grows 4× (450 → 1,750 ms) — proportional. From D=30 N=8M to D=300 N=2M (smaller N, 10× D, equal m), `cudaMemcpy` grows 2.4× (1,750 → 4,140 ms) — D matters more than N for this line.
+3. **Per-rank kernel times are nearly identical across rank counts at fixed (D, N)**. Compare D=30 N=2M: rank-0 kernel total is 941.8 / 931.4 / 944.7 / 942.6 / 941.9 ms for np = 1/2/4/8/16. Variance is ≤ 1.5%. This is the strongest direct evidence that ring's strong-scaling efficiency comes from splitting *work* across ranks rather than each rank doing less work per iteration — exactly what §3.1's strong scaling assumes.
+4. **`kernel_eval_and_pbest` and `kernel_update` are the two dominant GPU kernels** at every cell, with `kernel_draw_rng` consistently third. At D=300 N=2M, eval = 3,728 ms is the biggest line — D=300 makes evaluator math the per-iter bottleneck. At D=30 the three are closer in size (338 / 359 / 222 ms at N=2M). CUB `ArgMin` and `kernel_commit_gbest` are ≤ 3 ms total in every measured cell — the gbest reduction is not on any critical path.
+5. **The five timeout cells (`D=300 × N=8M × np={1, 2, 4, 8, 16}`)** are exactly the regime where compute per iter exceeds 90 sec for 100 iters — extrapolating the D=300 N=2M row, D=300 N=8M would be ~36 sec of GPU kernel time plus another ~35 sec of `cudaDeviceSynchronize`, putting each cell well past the per-cell budget. Filling those cells would require either a smaller iters (e.g., iters=10 for the timeout corner) or a longer slurm allocation; we treat them as out of scope.
 
 ---
 

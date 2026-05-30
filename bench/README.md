@@ -39,13 +39,15 @@ python3 bench/analyze.py        # M3 single-GPU figures (carryover, optional)
 | `sweep_largeN_weak.sh` | Phase H2: weak scaling per-rank N=8M, D=100, np={1,2,4,8,16}, no timeout | 4 nodes, 16 ranks |
 | `nsys_largeN.sh` | Phase H3: nsys profile at N=2M, D=100, ring np=4, iters=100 | 1 node, 4 ranks |
 | `nsys.sh` | M4 small-N nsys: `trace_ring_rank_*.nsys-rep` + `nsys_summary.txt` | 2 nodes, 2 ranks |
+| `nsys_matrix.sh` | 30-cell Nsight matrix (ring only): D ∈ {30, 300} × N ∈ {1K, 2M, 8M} × ranks ∈ {1, 2, 4, 8, 16}, iters=100. Per-cell 90s timeout. | 4 nodes, 16 ranks |
+| `parse_nsys.py` | Parse `nsys_summary_D*_N*_np*.txt` files → tidy `nsight_matrix.csv` + markdown tables in `nsight_tables.md`. | login, ~1 sec |
 | `analyze.py` | M3 single-GPU figures (legacy) | login node, ~5 sec |
 | `mpi_analyze.py` | All older MPI figures + `table_mpi.md` | login node, ~15 sec |
 | `plot_correctness.py` | `fig_correctness.png` for report §2 (convergence vs ranks at D=100 and D=300) | login, ~2 sec |
 | `plot_strong_scaling.py` | `fig_strong_scaling.png` for report §3.1 (speedup + efficiency) | login, ~2 sec |
 | `plot_weak_scaling.py` | `fig_weak_scaling.png` for report §3.2 (total_ms + efficiency) | login, ~2 sec |
 | `plot_breakdown.py` | `fig_breakdown.png` for report §3.3 (20-bar comm/compute stack) | login, ~2 sec |
-| `plot_nsight_comparison.py` | `fig_nsight_comparison.png` for report §3.7 (small-N vs large-N regime) | login, ~2 sec |
+| `plot_nsight_comparison.py` | `fig_nsight_comparison.png` — **superseded** by the matrix tables in §3.7 (produced via `nsys_matrix.sh` + `parse_nsys.py`); kept on disk for traceability | login, ~2 sec |
 | `_plot_style.py` | Shared `STYLE` dict imported by all `plot_*.py` scripts (not run directly) | — |
 
 ## Data files
@@ -111,7 +113,9 @@ This is documented as `MPI_CSV_COLS` at the top of `mpi_analyze.py`.
 | `fig_strong_scaling.png` | `sweep_largeN_strong.csv` + baseline via `plot_strong_scaling.py` | Report §3.1: speedup (4 series with two baselines) + efficiency vs ranks |
 | `fig_weak_scaling.png` | `sweep_largeN_weak.csv` via `plot_weak_scaling.py` | Report §3.2: total_ms (log-y) + weak efficiency vs ranks |
 | `fig_breakdown.png` | strong + weak CSVs via `plot_breakdown.py` | Report §3.3: 20 stacked bars (10 strong + 10 weak) of eval/reduce/update/sync |
-| `fig_nsight_comparison.png` | hardcoded numbers from nsys summaries via `plot_nsight_comparison.py` | Report §3.7: small-N vs large-N CUDA-API and kernel breakdowns |
+| `fig_nsight_comparison.png` | hardcoded numbers from nsys summaries via `plot_nsight_comparison.py` | **Superseded** by §3.7's matrix tables; kept on disk |
+| `nsight_matrix.csv` | parsed from per-cell `nsys_summary_*.txt` via `parse_nsys.py` | Long-format profile data, 25 cells × ~22 entries each |
+| `nsight_tables.md` | emitted by `parse_nsys.py` | Rendered Table A (API breakdown) + Table B (kernel breakdown) — embedded into §3.7 of M4_REPORT.md |
 
 ## Profiling traces
 
