@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/bash -l
 #SBATCH --job-name=pso_bench
 #SBATCH --output=bench/slurm_%j.out
 #SBATCH --error=bench/slurm_%j.err
@@ -8,9 +8,7 @@
 #SBATCH --gpus-per-task=1
 #SBATCH -p gpu-turing
 
-module load cuda/12.4
-module load gnu12/12.3.0
-module load openmpi4/4.1.6
+module load course/cme213/nvhpc/24.1
 
 REPO_DIR="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "$0")" && pwd)}"
 cd "$REPO_DIR"
@@ -25,7 +23,7 @@ HIST_DIR="$BENCH_DIR/history_${SLURM_JOB_ID}"
 mkdir -p "$HIST_DIR"
 
 echo "impl,evaluator,N,D,iters,seed,eval_ms,reduce_ms,update_ms,total_ms,final_gbest,achieved_bw_gbps,achieved_gflops" > "$CSV_GPU"
-echo "topology,evaluator,n_islands,N,D,iters,seed,eval_ms,reduce_ms,update_ms,total_ms,final_gbest" > "$CSV_MPI"
+echo "topology,evaluator,n_islands,N,D,iters,seed,eval_ms,reduce_ms,update_ms,sync_ms,total_ms,final_gbest" > "$CSV_MPI"
 
 echo ">>> building binaries"
 make -s all || { echo "make all FAILED — aborting"; exit 1; }

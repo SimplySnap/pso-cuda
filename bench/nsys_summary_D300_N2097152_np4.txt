@@ -1,0 +1,38 @@
+Generating SQLite file bench/trace_matrix_D300_N2097152_np4_rank0.sqlite from bench/trace_matrix_D300_N2097152_np4_rank0.nsys-rep
+Processing [bench/trace_matrix_D300_N2097152_np4_rank0.sqlite] with [/home/cme213/software/nvidia-hpc-sdk/2024_24.1/Linux_x86_64/24.1/profilers/Nsight_Systems/host-linux-x64/reports/cuda_api_sum.py]... 
+
+ ** CUDA API Summary (cuda_api_sum):
+
+ Time (%)  Total Time (ns)  Num Calls    Avg (ns)      Med (ns)    Min (ns)   Max (ns)   StdDev (ns)            Name         
+ --------  ---------------  ---------  ------------  ------------  --------  ----------  ------------  ----------------------
+     72.8       8451933020          6  1408655503.3  2010785330.5  16522163  2196904384  1079499705.7  cudaDeviceSynchronize 
+     26.7       3097818197       4830      641370.2      836666.0      4830     1367290      380670.3  cudaMemcpy            
+      0.3         31756970         14     2268355.0     1169955.5      7845     6592678     2471841.6  cudaFree              
+      0.1         15917543          1    15917543.0    15917543.0  15917543    15917543           0.0  cudaMemcpyFromSymbol  
+      0.1          7667585         14      547684.6      506949.0      3096     1861761      556393.3  cudaMalloc            
+      0.1          6206110        603       10292.1        3957.0      3647     3233099      131602.5  cudaLaunchKernel      
+      0.0          1114665        400        2786.7        2485.0      2144       13386        1063.3  cudaEventRecord       
+      0.0           335403        400         838.5         601.0       461        7855         758.5  cudaEventCreate       
+      0.0           207750        405         513.0         420.0       140        6413         451.9  cuGetProcAddress_v2   
+      0.0           174493        400         436.2         451.0       360        3407         183.2  cudaEventDestroy      
+      0.0            12844          1       12844.0       12844.0     12844       12844           0.0  cudaMemset            
+      0.0             6843          1        6843.0        6843.0      6843        6843           0.0  cudaEventSynchronize  
+      0.0             4520          2        2260.0        2260.0       241        4279        2855.3  cuModuleGetLoadingMode
+      0.0             4408          1        4408.0        4408.0      4408        4408           0.0  cuInit                
+
+Processing [bench/trace_matrix_D300_N2097152_np4_rank0.sqlite] with [/home/cme213/software/nvidia-hpc-sdk/2024_24.1/Linux_x86_64/24.1/profilers/Nsight_Systems/host-linux-x64/reports/cuda_gpu_kern_sum.py]... 
+
+ ** CUDA GPU Kernel Summary (cuda_gpu_kern_sum):
+
+ Time (%)  Total Time (ns)  Instances   Avg (ns)    Med (ns)   Min (ns)  Max (ns)  StdDev (ns)                                                  Name                                                
+ --------  ---------------  ---------  ----------  ----------  --------  --------  -----------  ----------------------------------------------------------------------------------------------------
+     42.3       3577111883        100  35771118.8  35788654.5  35659658  36079251      70937.7  kernel_update(float *, float *, const float *, const float *, const float *, const int *, float, fl…
+     39.3       3321303798        100  33213038.0  33420068.0  20588501  38745358    4737632.7  kernel_eval_and_pbest(const float *, float *, float *, float *, float (*)(const float *, int), int,…
+     17.9       1516069783        100  15160697.8  15157646.5  15094912  15477791      40790.7  kernel_draw_rng(curandStateXORWOW *, float *, float *, int, int)                                    
+      0.3         21928338          1  21928338.0  21928338.0  21928338  21928338          0.0  kernel_swarm_init(float *, float *, float *, float *, float *, curandStateXORWOW *, float, float, i…
+      0.2         16521181          1  16521181.0  16521181.0  16521181  16521181          0.0  kernel_curand_init(curandStateXORWOW *, unsigned long long, int)                                    
+      0.0          2270967        100     22709.7     22624.0     22047     23744        463.6  void cub::CUB_200200_750_NS::DeviceReduceKernel<cub::CUB_200200_750_NS::DeviceReducePolicy<cub::CUB…
+      0.0           227009        100      2270.1      2272.0      2176      2432         57.8  void cub::CUB_200200_750_NS::DeviceReduceSingleTileKernel<cub::CUB_200200_750_NS::DeviceReducePolic…
+      0.0           148001        100      1480.0      1472.0      1408      1633         56.8  kernel_commit_gbest(const ReduceResult *, float *, int *, float *, int, int)                        
+      0.0             2271          1      2271.0      2271.0      2271      2271          0.0  kernel_gather_gbest_pos(const float *, float *, const int *, int, int)                              
+

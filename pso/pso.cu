@@ -108,6 +108,7 @@ pso.cu
 #include "kernels.cuh"
 #include "cuda_check.cuh"
 #include <math_constants.h>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <limits>
@@ -282,6 +283,7 @@ PSOResult pso_run(const PSOConfig* cfg, EvaluatorFn evaluator, int islands, char
     // update positions and velocities.
 
     //------------------MAIN ITERATION LOOP------------------
+    float sync_ms = 0.0f;
     for (int iter = 0; iter < cfg->max_iters; ++iter) {
         CUDA_CHECK(cudaEventRecord(iter_start[iter], 0));
         // Evaluate current position and compare with pbest.
@@ -323,6 +325,22 @@ PSOResult pso_run(const PSOConfig* cfg, EvaluatorFn evaluator, int islands, char
             cfg->n_particles, cfg->n_dims);
         CUDA_CHECK(cudaGetLastError());
         CUDA_CHECK(cudaEventRecord(update_done[iter], 0));
+
+        // Multi-island sync: fire callback every sync_interval iters.
+        // Device must be caught up before the callback touches device memory
+        // via cudaMemcpy / MPI.
+        if (cfg->on_sync != nullptr && cfg->sync_interval > 0
+                && (iter + 1) % cfg->sync_interval == 0) {
+            CUDA_CHECK(cudaDeviceSynchronize());
+            IslandState st = {
+                cfg->n_particles, cfg->n_dims,
+                s.pbest_pos, s.pbest, s.d_gbest_val, s.d_gbest_idx,
+            };
+            auto t0 = std::chrono::steady_clock::now();
+            cfg->on_sync(&st, cfg->on_sync_data);
+            sync_ms += std::chrono::duration<float, std::milli>(
+                std::chrono::steady_clock::now() - t0).count();
+        }
     }
     CUDA_CHECK(cudaEventSynchronize(update_done[cfg->max_iters - 1]));
 
@@ -367,7 +385,8 @@ PSOResult pso_run(const PSOConfig* cfg, EvaluatorFn evaluator, int islands, char
     result.eval_ms = eval_ms;
     result.reduce_ms = reduce_ms;
     result.update_ms = update_ms;
-    result.total_ms = eval_ms + reduce_ms + update_ms;
+    result.sync_ms = sync_ms;
+    result.total_ms = eval_ms + reduce_ms + update_ms + sync_ms;
     result.best_position = static_cast<float*>(std::malloc(sizeof(float) * cfg->n_dims));
     if (result.best_position == nullptr) {
         std::fprintf(stderr, "Failed to allocate PSOResult.best_position.\n");
@@ -412,5 +431,6 @@ void pso_result_free(PSOResult* result) {
     result->eval_ms = 0.0f;
     result->reduce_ms = 0.0f;
     result->update_ms = 0.0f;
+    result->sync_ms = 0.0f;
     result->total_ms = 0.0f;
 }

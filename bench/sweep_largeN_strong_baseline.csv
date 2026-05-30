@@ -1,0 +1,2 @@
+impl,evaluator,N,D,iters,seed,eval_ms,reduce_ms,update_ms,total_ms,final_gbest,achieved_bw_gbps,achieved_gflops
+gpu,rastrigin,8388608,100,500,42,19069.863281,39.024727,35420.152344,54529.039062,60.849743,215.680097,153.837444

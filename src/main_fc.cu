@@ -164,7 +164,6 @@ int main(int argc, char** argv) {
 
     IslandSyncData sync_data{};
     island_sync_data_alloc(&sync_data, MPI_COMM_WORLD, args.n_migrate, args.n_dims);
-    sync_data.sync_interval = args.sync_interval; //directly set MPI sync interval
 
     PSOConfig cfg = {
         .n_particles   = args.n_particles,
@@ -178,7 +177,7 @@ int main(int argc, char** argv) {
         .n_islands     = n_ranks,
         .topology      = (char*)"fc",
         .seed          = args.seed + (unsigned long long)rank,
-        //.sync_interval = args.sync_interval,
+        .sync_interval = args.sync_interval,
         .on_sync       = island_migrate_fc,
         .on_sync_data  = &sync_data,
     };
@@ -194,17 +193,18 @@ int main(int argc, char** argv) {
         std::printf("eval_ms    = %.3f\n", result.eval_ms);
         std::printf("reduce_ms  = %.3f\n", result.reduce_ms);
         std::printf("update_ms  = %.3f\n", result.update_ms);
+        std::printf("sync_ms    = %.3f\n", result.sync_ms);
         std::printf("total_ms   = %.3f\n", result.total_ms);
 
         if (args.csv_path) {
             FILE* f = std::fopen(args.csv_path, "a");
             if (f) {
                 std::fprintf(f,
-                    "fc,%s,%d,%d,%d,%d,%llu,%.6f,%.6f,%.6f,%.6f,%.8g\n",
+                    "fc,%s,%d,%d,%d,%d,%llu,%.6f,%.6f,%.6f,%.6f,%.6f,%.8g\n",
                     args.evaluator, n_ranks, args.n_particles, args.n_dims,
                     args.max_iters, (unsigned long long)args.seed,
                     result.eval_ms, result.reduce_ms, result.update_ms,
-                    result.total_ms, global_val);
+                    result.sync_ms, result.total_ms, global_val);
                 std::fclose(f);
             }
         }

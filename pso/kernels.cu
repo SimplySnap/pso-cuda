@@ -58,7 +58,10 @@ __global__ void kernel_eval_and_pbest(
     //1: evaluate fitness for current particle
     //a: stage fitness array to pass into f as _contiguous_ array
     
-    float pos_local[128]; //define local array
+    // Stack array; CUDA spills to L1-backed local memory above ~64 regs.
+    // [1024] supports D up to 1024. Reading positions[tid + d*N] strided per
+    // thread, then handing a contiguous pointer to the evaluator function.
+    float pos_local[1024];
     //stage:
     for (int d = 0; d < D; d++)
         pos_local[d] = positions[tid + d * N];
