@@ -59,6 +59,7 @@ The performance/scaling work focuses on the large-N regime (per-rank N up to 8M,
 - The sync callback **fully blocks the next iteration**; no async-stream overlap between compute and migration.
 - The migration callback copies `pbest_pos` column-by-column (D separate cudaMemcpys per rank per sync). A pack-once gather kernel would reduce this by ~5–10× at small N (less relevant at large N where compute already dominates).
 - `kernel_eval_and_pbest`'s `pos_local` stack array caps **D at 1024**.
+- **VRAM ceiling**: five large SoA buffers in `swarm_alloc` (positions, velocities, pbest_pos, d_r1, d_r2) each need `N × D × 4` bytes. The Quadro RTX 6000's 24 GB cap puts the runnable region at roughly `D × N ≲ 1.2 × 10⁹`. D=300 N=8M (would require ~48 GB) is therefore out of reach; the §3.7 matrix marks those cells as OOM rather than timeout.
 
 ---
 
@@ -267,7 +268,7 @@ Levy at D=30 and D=100 still hits machine epsilon (~7.6e-15) under multi-island 
 
 ### 3.7 Nsight Systems matrix across D × N × ranks
 
-*(`bench/nsys_matrix.sh`, slurm job 88625. Per cell: `mpirun -np {ranks} nsys profile ./pso_ring --evaluator rastrigin --N {N} --D {D} --iters 100 --sync 25 --migrate max(5, N/100) --seed 42`. Per-cell summaries (rank-0 `cuda_api_sum` + `cuda_gpu_kern_sum`) in `bench/nsys_summary_D{D}_N{N}_np{ranks}.txt`. Long-format CSV in `bench/nsight_matrix.csv`. Tables produced by `bench/parse_nsys.py` and replicated below; see `bench/nsight_tables.md` for the rendered file. **25 of 30 cells captured** — the five `D=300 × N=8M × np={1, 2, 4, 8, 16}` cells exceeded the 90-second per-cell timeout and are omitted from the tables.)*
+*(`bench/nsys_matrix.sh`, slurm job 88625; corner re-run in `bench/nsys_matrix_largeD.sh`, slurm job 88634. Per cell: `mpirun -np {ranks} nsys profile ./pso_ring --evaluator rastrigin --N {N} --D {D} --iters 100 --sync 25 --migrate max(5, N/100) --seed 42`. Per-cell summaries (rank-0 `cuda_api_sum` + `cuda_gpu_kern_sum`) in `bench/nsys_summary_D{D}_N{N}_np{ranks}.txt`. Long-format CSV in `bench/nsight_matrix.csv`. Tables produced by `bench/parse_nsys.py` and replicated below; see `bench/nsight_tables.md` for the rendered file. **25 of 30 cells captured.** The five `D=300 × N=8M × np={1, 2, 4, 8, 16}` cells were initially classified as "timeout" but the corner re-run without the per-cell timeout exposed the real cause: every cell aborts with `CUDA error: out of memory` at `swarm_alloc` (`pso/pso.cu:126`). At D=300 N=8M the five large SoA buffers (positions, velocities, pbest_pos, d_r1, d_r2) each need `N × D × 4 = 9.6 GB`, totalling ~48 GB — exceeding the Quadro RTX 6000's 24 GB VRAM. This is a hardware ceiling, not a budget issue.)*
 
 #### Table A — CUDA API breakdown (ms, rank 0)
 
@@ -298,7 +299,7 @@ Levy at D=30 and D=100 still hits machine epsilon (~7.6e-15) under multi-island 
 | 300 | 2M | 4  | 3,097.8 | 8,451.9 | 6.2  | 15.9  | 41.3 | 11.61 s |
 | 300 | 2M | 8  | 3,100.9 | 8,453.1 | 13.5 | 12.1  | 45.0 | 11.62 s |
 | 300 | 2M | 16 | 3,093.6 | 8,480.9 | 6.2  | 12.7  | 55.7 | 11.65 s |
-| 300 | 8M | * | — | — | — | — | — | timeout |
+| 300 | 8M | * | — | — | — | — | — | **OOM** (24 GB VRAM cap) |
 
 #### Table B — GPU kernel breakdown (ms, rank 0)
 
@@ -329,7 +330,7 @@ Levy at D=30 and D=100 still hits machine epsilon (~7.6e-15) under multi-island 
 | 300 | 2M | 4  | 3,321.3 | 3,577.1 | 1,516.1 | 2.5  | 0.15 | 38.5 | 8.46 s |
 | 300 | 2M | 8  | 3,320.6 | 3,577.9 | 1,516.8 | 2.5  | 0.15 | 38.9 | 8.46 s |
 | 300 | 2M | 16 | 3,349.0 | 3,578.3 | 1,516.1 | 2.5  | 0.15 | 38.5 | 8.48 s |
-| 300 | 8M | * | — | — | — | — | — | — | timeout |
+| 300 | 8M | * | — | — | — | — | — | — | **OOM** (24 GB VRAM cap) |
 
 #### Reading the matrix
 
@@ -337,7 +338,7 @@ Levy at D=30 and D=100 still hits machine epsilon (~7.6e-15) under multi-island 
 2. **`cudaMemcpy` scales with `m × D` per sync, not with N directly**, so it grows weakly with N once N is large enough that the per-call overhead is amortized. From D=30 N=2M to D=30 N=8M (4× particles), `cudaMemcpy` grows 4× (450 → 1,750 ms) — proportional. From D=30 N=8M to D=300 N=2M (smaller N, 10× D, equal m), `cudaMemcpy` grows 2.4× (1,750 → 4,140 ms) — D matters more than N for this line.
 3. **Per-rank kernel times are nearly identical across rank counts at fixed (D, N)**. Compare D=30 N=2M: rank-0 kernel total is 941.8 / 931.4 / 944.7 / 942.6 / 941.9 ms for np = 1/2/4/8/16. Variance is ≤ 1.5%. This is the strongest direct evidence that ring's strong-scaling efficiency comes from splitting *work* across ranks rather than each rank doing less work per iteration — exactly what §3.1's strong scaling assumes.
 4. **`kernel_eval_and_pbest` and `kernel_update` are the two dominant GPU kernels** at every cell, with `kernel_draw_rng` consistently third. At D=300 N=2M, eval = 3,728 ms is the biggest line — D=300 makes evaluator math the per-iter bottleneck. At D=30 the three are closer in size (338 / 359 / 222 ms at N=2M). CUB `ArgMin` and `kernel_commit_gbest` are ≤ 3 ms total in every measured cell — the gbest reduction is not on any critical path.
-5. **The five timeout cells (`D=300 × N=8M × np={1, 2, 4, 8, 16}`)** are exactly the regime where compute per iter exceeds 90 sec for 100 iters — extrapolating the D=300 N=2M row, D=300 N=8M would be ~36 sec of GPU kernel time plus another ~35 sec of `cudaDeviceSynchronize`, putting each cell well past the per-cell budget. Filling those cells would require either a smaller iters (e.g., iters=10 for the timeout corner) or a longer slurm allocation; we treat them as out of scope.
+5. **The `D=300 × N=8M` cells are unreachable on this hardware** — not a budget problem but a VRAM ceiling. At D=300 N=8M, the five large SoA buffers in `swarm_alloc` (positions, velocities, pbest_pos, d_r1, d_r2) each need `N × D × 4 = 9.6 GB`, totalling ~48 GB and exceeding the Quadro RTX 6000's 24 GB. The corner re-run (`bench/nsys_matrix_largeD.sh`, slurm job 88634, no per-cell timeout) confirmed this: every cell aborts with `CUDA error pso/pso.cu:126: out of memory`. Even np=16 doesn't help because each rank still allocates its own per-rank N=8M swarm. The same VRAM ceiling shapes §3.6 and §3 generally — `D × N ≲ 1.2 × 10⁹` is the runnable region under the current SoA allocation pattern.
 
 ---
 
