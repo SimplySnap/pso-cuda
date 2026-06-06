@@ -14,11 +14,18 @@
 typedef float (*EvaluatorFn)(const float* position, int n_dim);
 #endif
 
-//forward declare for MPI runs — full definition lives in mpi/mpi_island.h
-//NB this is needed to declare the SyncCallback type above, which takes an IslandState pointer
-typedef struct IslandState IslandState;
+// Borrowed view of one island's device state, passed to SyncCallback.
+// No MPI types here so the PSO library stays MPI-agnostic.
+typedef struct {
+    int    N;
+    int    D;
+    float* d_pbest_pos;  // [D * N] SoA
+    float* d_pbest_fit;  // [N]
+    float* d_gbest_val;  // scalar
+    int*   d_gbest_idx;  // scalar
+} IslandState;
 
-//sync callback type — called every sync_interval iterations in multi-island runs
+// Sync callback type — invoked every sync_interval iterations in multi-island runs.
 typedef void (*SyncCallback)(IslandState* state, void* user_data);
 
 /*Structures: config, best soln, particle*/
@@ -35,8 +42,9 @@ typedef struct {
     int n_islands;       // number of islands (and thus gpu clusters)
     char* topology;      // string topology
     unsigned long long seed; // RNG seed for reproducibility (optional, can be zero)
-    SyncCallback on_sync;
-    void*        on_sync_data;
+    int          sync_interval; // call on_sync every this many iters (0 = disabled)
+    SyncCallback on_sync;       // nullable
+    void*        on_sync_data;  // forwarded to on_sync as user_data
 } PSOConfig;
 
 //SofA format - coalescing. Downside - no swarm particle 'object'
@@ -77,6 +85,7 @@ typedef struct {
     float  eval_ms;
     float  reduce_ms;
     float  update_ms;
+    float  sync_ms;        // host wall time spent inside on_sync callbacks
     float  total_ms;
     float* gbest_history;  // host pointer, length history_len (nullable)
     int    history_len;
