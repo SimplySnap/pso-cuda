@@ -143,8 +143,13 @@ __global__ void kernel_update(
 
     // gbest_idx is broadcast across the warp; pbest_pos[dim*N + gidx] gives
     // the global-best particle's pbest for this dim (which IS the gbest pos).
-    int gidx = *d_gbest_idx;
+    /* OLD CODE, cache inefficient
+    int gidx = *d_gbest_idx; 
     float gb = pbest_pos[dim * N + gidx];
+    */
+    //NB we use ldg to store in read-only cache, freeing register pressure per warp/thread
+    int gidx = __ldg(d_gbest_idx); //global best index
+    float gb = __ldg(&pbest_pos[dim * N + gidx]); //global best pos
 
     float pos = positions[offset];
     float vel = velocities[offset];
