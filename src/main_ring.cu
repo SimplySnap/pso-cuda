@@ -92,6 +92,10 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    //declared before cfg so the initializer can take its address; populated
+    //by island_sync_data_alloc() below, before pso_run() ever uses it.
+    IslandSyncData sync_data{};
+
     PSOConfig cfg = {
         .n_particles   = args.n_particles,
         .n_dims        = args.n_dims,
@@ -116,7 +120,6 @@ int main(int argc, char** argv) {
         }
     }
 
-    IslandSyncData sync_data{};
     island_sync_data_alloc(&sync_data, MPI_COMM_WORLD, args.n_migrate, args.n_dims);
 
     PSOResult result = pso_run(&cfg, evaluator, n_ranks, (char*)"ring");
