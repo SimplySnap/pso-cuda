@@ -6,6 +6,68 @@
 #include <algorithm>
 #include <vector>
 
+/* =============================================================================
+ * Device gather/scatter for migration sync.
+ * -----------------------------------------------------------------------------
+ * pbest_pos is SoA [D * N] (component d of particle i at d*N + i), so a single
+ * particle's D coordinates are strided across D columns. The old sync pulled
+ * each whole column D->H to pick out m migrants — O(D) copies of N floats each.
+ * These kernels do the strided gather/scatter on-device so only the packed
+ * m*D migrants cross PCIe. Packed layout mirrors the host buffers: [dim*m + mi].
+ * ===========================================================================*/
+
+static inline int grid_for(int n, int block) { return (n + block - 1) / block; }
+
+// Gather m migrants' coords from pbest_pos into packed out[dim*m + mi].
+__global__ void gather_migrants_kernel(const float* __restrict__ pbest_pos,
+                                       const int* __restrict__ idx,
+                                       float* __restrict__ out,
+                                       int N, int D, int m) {
+    int t = blockIdx.x * blockDim.x + threadIdx.x;
+    if (t >= m * D) return;
+    int dim = t / m;
+    int mi  = t % m;
+    out[t] = pbest_pos[dim * N + idx[mi]];
+}
+
+// Scatter packed in[dim*m + mi] back into pbest_pos at the given slot indices.
+__global__ void scatter_migrants_kernel(float* __restrict__ pbest_pos,
+                                        const int* __restrict__ slot,
+                                        const float* __restrict__ in,
+                                        int N, int D, int m) {
+    int t = blockIdx.x * blockDim.x + threadIdx.x;
+    if (t >= m * D) return;
+    int dim = t / m;
+    int mi  = t % m;
+    pbest_pos[dim * N + slot[mi]] = in[t];
+}
+
+// Scatter m fitnesses into pbest_fit at the given slot indices.
+__global__ void scatter_fit_kernel(float* __restrict__ pbest_fit,
+                                   const int* __restrict__ slot,
+                                   const float* __restrict__ in, int m) {
+    int t = blockIdx.x * blockDim.x + threadIdx.x;
+    if (t >= m) return;
+    pbest_fit[slot[t]] = in[t];
+}
+
+// Gather the gbest particle's (at *gbest_idx) D coords into contiguous out[D].
+__global__ void gather_gbest_kernel(const float* __restrict__ pbest_pos,
+                                    const int* __restrict__ gbest_idx,
+                                    float* __restrict__ out, int N, int D) {
+    int dim = blockIdx.x * blockDim.x + threadIdx.x;
+    if (dim >= D) return;
+    out[dim] = pbest_pos[dim * N + *gbest_idx];
+}
+
+// Scatter a contiguous gbest position[D] into pbest_pos slot 0.
+__global__ void scatter_gbest_kernel(float* __restrict__ pbest_pos,
+                                     const float* __restrict__ in, int N, int D) {
+    int dim = blockIdx.x * blockDim.x + threadIdx.x;
+    if (dim >= D) return;
+    pbest_pos[dim * N] = in[dim];
+}
+
 void island_sync_data_alloc(IslandSyncData* data, MPI_Comm comm,
                              int n_migrate, int D) {
     /**
@@ -25,6 +87,7 @@ void island_sync_data_alloc(IslandSyncData* data, MPI_Comm comm,
      */
     data->comm      = comm;
     data->n_migrate = n_migrate;
+    data->D         = D;
     MPI_Comm_rank(comm, &data->rank);
     MPI_Comm_size(comm, &data->n_ranks);
 
@@ -39,6 +102,13 @@ void island_sync_data_alloc(IslandSyncData* data, MPI_Comm comm,
         std::fprintf(stderr, "island_sync_data_alloc: malloc failed\n");
         std::exit(EXIT_FAILURE);
     }
+
+    //device scratch for the gather/scatter kernels — sized by n_migrate and D
+    CUDA_CHECK(cudaMalloc(&data->d_send_pos, sizeof(float) * n_migrate * D));
+    CUDA_CHECK(cudaMalloc(&data->d_recv_pos, sizeof(float) * n_migrate * D));
+    CUDA_CHECK(cudaMalloc(&data->d_recv_fit, sizeof(float) * n_migrate));
+    CUDA_CHECK(cudaMalloc(&data->d_idx,      sizeof(int)   * n_migrate));
+    CUDA_CHECK(cudaMalloc(&data->d_gbest_pos, sizeof(float) * D));
 }
 
 void island_sync_data_free(IslandSyncData* data) {
@@ -57,6 +127,12 @@ void island_sync_data_free(IslandSyncData* data) {
     std::free(data->h_recv_pos);  data->h_recv_pos  = nullptr;
     std::free(data->h_recv_fit);  data->h_recv_fit  = nullptr;
     std::free(data->h_gbest_pos); data->h_gbest_pos = nullptr;
+
+    cudaFree(data->d_send_pos);  data->d_send_pos  = nullptr;
+    cudaFree(data->d_recv_pos);  data->d_recv_pos  = nullptr;
+    cudaFree(data->d_recv_fit);  data->d_recv_fit  = nullptr;
+    cudaFree(data->d_idx);       data->d_idx       = nullptr;
+    cudaFree(data->d_gbest_pos); data->d_gbest_pos = nullptr;
 }
 
 void island_gbest_exchange(IslandState* state, void* user_data) {
@@ -92,21 +168,15 @@ void island_gbest_exchange(IslandState* state, void* user_data) {
     MPI_Allreduce(&local_pair, &best_pair, 1, MPI_FLOAT_INT,
                   MPI_MINLOC, d->comm);
 
-    //winning rank copies its gbest position from device to h_gbest_pos
+    //winning rank gathers its gbest position on-device (one kernel over D),
+    //then a single D-float D->H copy — no whole-column transfers.
     if (d->rank == best_pair.rank) {
-        int gbest_idx = -1;
-        CUDA_CHECK(cudaMemcpy(&gbest_idx, state->d_gbest_idx,
-            sizeof(int), cudaMemcpyDeviceToHost));
-
-        //gather D position values from pbest_pos[d * N + gbest_idx]
-        //use a small temp device buffer to do a single coalesced copy
-        std::vector<float> h_pbest_col(state->N);
-        for (int dim = 0; dim < state->D; ++dim) {
-            CUDA_CHECK(cudaMemcpy(h_pbest_col.data(),
-                state->d_pbest_pos + dim * state->N,
-                sizeof(float) * state->N, cudaMemcpyDeviceToHost));
-            d->h_gbest_pos[dim] = h_pbest_col[gbest_idx];
-        }
+        gather_gbest_kernel<<<grid_for(state->D, 256), 256>>>(
+            state->d_pbest_pos, state->d_gbest_idx, d->d_gbest_pos,
+            state->N, state->D);
+        CUDA_CHECK(cudaGetLastError());
+        CUDA_CHECK(cudaMemcpy(d->h_gbest_pos, d->d_gbest_pos,
+            sizeof(float) * state->D, cudaMemcpyDeviceToHost));
     }
 
     //broadcast winning position to all ranks
@@ -118,13 +188,13 @@ void island_gbest_exchange(IslandState* state, void* user_data) {
 
     //gbest_idx is now meaningless across ranks — kernel_update reads
     //pbest_pos[dim*N + *d_gbest_idx], so we inject the broadcast position
-    //into slot 0 of pbest_pos and point d_gbest_idx there
-    for (int dim = 0; dim < state->D; ++dim) {
-        CUDA_CHECK(cudaMemcpy(
-            state->d_pbest_pos + dim * state->N,
-            &d->h_gbest_pos[dim],
-            sizeof(float), cudaMemcpyHostToDevice));
-    }
+    //into slot 0 of pbest_pos (one H->D of D floats + a kernel) and point
+    //d_gbest_idx there.
+    CUDA_CHECK(cudaMemcpy(d->d_gbest_pos, d->h_gbest_pos,
+        sizeof(float) * state->D, cudaMemcpyHostToDevice));
+    scatter_gbest_kernel<<<grid_for(state->D, 256), 256>>>(
+        state->d_pbest_pos, d->d_gbest_pos, state->N, state->D);
+    CUDA_CHECK(cudaGetLastError());
     int zero = 0;
     CUDA_CHECK(cudaMemcpy(state->d_gbest_idx, &zero,
         sizeof(int), cudaMemcpyHostToDevice));
@@ -173,15 +243,15 @@ void island_migrate_ring(IslandState* state, void* user_data) {
 
     std::vector<int> top = top_indices(h_fit.data(), N, m);
 
-    //pack send buffers — SoA: h_send_pos[dim * m + mi]
-    std::vector<float> h_pbest_row(N);
-    for (int dim = 0; dim < D; ++dim) {
-        CUDA_CHECK(cudaMemcpy(h_pbest_row.data(),
-            state->d_pbest_pos + dim * N,
-            sizeof(float) * N, cudaMemcpyDeviceToHost));
-        for (int mi = 0; mi < m; ++mi)
-            d->h_send_pos[dim * m + mi] = h_pbest_row[top[mi]];
-    }
+    //pack send buffers on-device: copy top indices H->D, gather into d_send_pos
+    //[dim*m + mi], then one m*D D->H copy into the host MPI buffer.
+    CUDA_CHECK(cudaMemcpy(d->d_idx, top.data(),
+        sizeof(int) * m, cudaMemcpyHostToDevice));
+    gather_migrants_kernel<<<grid_for(m * D, 256), 256>>>(
+        state->d_pbest_pos, d->d_idx, d->d_send_pos, N, D, m);
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaMemcpy(d->h_send_pos, d->d_send_pos,
+        sizeof(float) * m * D, cudaMemcpyDeviceToHost));
     for (int mi = 0; mi < m; ++mi)
         d->h_send_fit[mi] = h_fit[top[mi]];
 
@@ -197,35 +267,26 @@ void island_migrate_ring(IslandState* state, void* user_data) {
         d->h_recv_fit, m, MPI_FLOAT, left,  1,
         d->comm, MPI_STATUS_IGNORE);
 
-    //inject received particles into last m slots (overwrite weakest)
-    std::vector<int> worst = top_indices(h_fit.data(), N, m); //reuse — these are best; invert
-    //actually replace the worst: partial_sort descending
+    //inject received particles into the m weakest slots (partial_sort descending)
     std::vector<int> idx(N);
     for (int i = 0; i < N; ++i) idx[i] = i;
     std::partial_sort(idx.begin(), idx.begin() + m, idx.end(),
         [&](int a, int b){ return h_fit[a] > h_fit[b]; }); //descending
     std::vector<int> worst_idx(idx.begin(), idx.begin() + m);
 
-    for (int dim = 0; dim < D; ++dim) {
-        CUDA_CHECK(cudaMemcpy(h_pbest_row.data(),
-            state->d_pbest_pos + dim * N,
-            sizeof(float) * N, cudaMemcpyDeviceToHost));
-        for (int mi = 0; mi < m; ++mi)
-            h_pbest_row[worst_idx[mi]] = d->h_recv_pos[dim * m + mi];
-        CUDA_CHECK(cudaMemcpy(
-            state->d_pbest_pos + dim * N,
-            h_pbest_row.data(),
-            sizeof(float) * N, cudaMemcpyHostToDevice));  //was cut off here
-    }
-    //update pbest_fit for injected slots
-    std::vector<float> h_fit_write(N);
-    CUDA_CHECK(cudaMemcpy(h_fit_write.data(), state->d_pbest_fit,
-        sizeof(float) * N, cudaMemcpyDeviceToHost));
-    for (int mi = 0; mi < m; ++mi)
-        h_fit_write[worst_idx[mi]] = d->h_recv_fit[mi];
-    CUDA_CHECK(cudaMemcpy(state->d_pbest_fit,
-        h_fit_write.data(),
-        sizeof(float) * N, cudaMemcpyHostToDevice));
+    //push recv buffers + worst slots to device, scatter positions and fitness.
+    CUDA_CHECK(cudaMemcpy(d->d_idx, worst_idx.data(),
+        sizeof(int) * m, cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d->d_recv_pos, d->h_recv_pos,
+        sizeof(float) * m * D, cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d->d_recv_fit, d->h_recv_fit,
+        sizeof(float) * m, cudaMemcpyHostToDevice));
+    scatter_migrants_kernel<<<grid_for(m * D, 256), 256>>>(
+        state->d_pbest_pos, d->d_idx, d->d_recv_pos, N, D, m);
+    CUDA_CHECK(cudaGetLastError());
+    scatter_fit_kernel<<<grid_for(m, 256), 256>>>(
+        state->d_pbest_fit, d->d_idx, d->d_recv_fit, m);
+    CUDA_CHECK(cudaGetLastError());
 
     island_gbest_exchange(state, user_data);
 }
@@ -263,15 +324,15 @@ void island_migrate_fc(IslandState* state, void* user_data) {
 
     std::vector<int> top = top_indices(h_fit.data(), N, m);
 
-    //pack send buffers
-    std::vector<float> h_pbest_row(N);
-    for (int dim = 0; dim < D; ++dim) {
-        CUDA_CHECK(cudaMemcpy(h_pbest_row.data(),
-            state->d_pbest_pos + dim * N,
-            sizeof(float) * N, cudaMemcpyDeviceToHost));
-        for (int mi = 0; mi < m; ++mi)
-            d->h_send_pos[dim * m + mi] = h_pbest_row[top[mi]];
-    }
+    //pack send buffers on-device (see ring): gather top migrants into d_send_pos,
+    //then a single m*D D->H copy into the host MPI buffer.
+    CUDA_CHECK(cudaMemcpy(d->d_idx, top.data(),
+        sizeof(int) * m, cudaMemcpyHostToDevice));
+    gather_migrants_kernel<<<grid_for(m * D, 256), 256>>>(
+        state->d_pbest_pos, d->d_idx, d->d_send_pos, N, D, m);
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaMemcpy(d->h_send_pos, d->d_send_pos,
+        sizeof(float) * m * D, cudaMemcpyDeviceToHost));
     for (int mi = 0; mi < m; ++mi)
         d->h_send_fit[mi] = h_fit[top[mi]];
 
@@ -306,31 +367,31 @@ void island_migrate_fc(IslandState* state, void* user_data) {
         [&](int a, int b){ return h_fit[a] > h_fit[b]; }); //descending = worst first
     std::vector<int> worst_idx(idx.begin(), idx.begin() + n_inject);
 
-    //inject positions dim by dim
-    for (int dim = 0; dim < D; ++dim) {
-        CUDA_CHECK(cudaMemcpy(h_pbest_row.data(),
-            state->d_pbest_pos + dim * N,
-            sizeof(float) * N, cudaMemcpyDeviceToHost));
+    //compact the chosen foreign particles into a contiguous packed buffer
+    //[dim*n_inject + i] (host side — gathered_pos is already host memory), plus
+    //their fitnesses and target slots, then push to device and scatter.
+    for (int dim = 0; dim < D; ++dim)
         for (int i = 0; i < n_inject; ++i) {
             int r  = cands[i].rank;
             int mi = cands[i].mi;
-            h_pbest_row[worst_idx[i]] = gathered_pos[r * m * D + dim * m + mi];
+            d->h_recv_pos[dim * n_inject + i] =
+                gathered_pos[r * m * D + dim * m + mi];
         }
-        CUDA_CHECK(cudaMemcpy(
-            state->d_pbest_pos + dim * N,
-            h_pbest_row.data(),
-            sizeof(float) * N, cudaMemcpyHostToDevice));
-    }
-
-    //inject fitnesses
-    std::vector<float> h_fit_write(N);
-    CUDA_CHECK(cudaMemcpy(h_fit_write.data(), state->d_pbest_fit,
-        sizeof(float) * N, cudaMemcpyDeviceToHost));
     for (int i = 0; i < n_inject; ++i)
-        h_fit_write[worst_idx[i]] = cands[i].fit;
-    CUDA_CHECK(cudaMemcpy(state->d_pbest_fit,
-        h_fit_write.data(),
-        sizeof(float) * N, cudaMemcpyHostToDevice));
+        d->h_recv_fit[i] = cands[i].fit;
+
+    CUDA_CHECK(cudaMemcpy(d->d_idx, worst_idx.data(),
+        sizeof(int) * n_inject, cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d->d_recv_pos, d->h_recv_pos,
+        sizeof(float) * n_inject * D, cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d->d_recv_fit, d->h_recv_fit,
+        sizeof(float) * n_inject, cudaMemcpyHostToDevice));
+    scatter_migrants_kernel<<<grid_for(n_inject * D, 256), 256>>>(
+        state->d_pbest_pos, d->d_idx, d->d_recv_pos, N, D, n_inject);
+    CUDA_CHECK(cudaGetLastError());
+    scatter_fit_kernel<<<grid_for(n_inject, 256), 256>>>(
+        state->d_pbest_fit, d->d_idx, d->d_recv_fit, n_inject);
+    CUDA_CHECK(cudaGetLastError());
 
     island_gbest_exchange(state, user_data);
 }

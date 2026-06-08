@@ -17,11 +17,20 @@
  * @param h_recv_pos    Host buffer for incoming migrant positions [n_migrate * D].
  * @param h_recv_fit    Host buffer for incoming migrant fitnesses [n_migrate].
  * @param h_gbest_pos   Host buffer for gbest position broadcast [D].
+ * @param D             Problem dimensionality (sizes the device scratch buffers).
+ * @param d_send_pos    Device scratch for packed outgoing migrants [n_migrate * D].
+ * @param d_recv_pos    Device scratch for packed incoming migrants [n_migrate * D].
+ * @param d_recv_fit    Device scratch for incoming migrant fitnesses [n_migrate].
+ * @param d_idx         Device scratch for migrant slot indices [n_migrate].
+ * @param d_gbest_pos   Device scratch for the gathered gbest position [D].
  *
  * @Structure
  *   Allocated once in the MPI main before pso_run() via island_sync_data_alloc().
  *   Freed after pso_run() returns via island_sync_data_free().
- *   Host buffers are reused across every sync call to avoid per-sync malloc.
+ *   Host and device buffers are reused across every sync to avoid per-sync malloc.
+ *   The device scratch lets the per-sync gather/scatter run as kernels and move
+ *   only the n_migrate*D migrants (and D gbest values) across PCIe, instead of
+ *   the old per-dimension host-staged copies that dragged whole N-float columns.
  */
 typedef struct {
     MPI_Comm comm;
@@ -33,6 +42,13 @@ typedef struct {
     float*   h_recv_pos;  //[n_migrate * D]
     float*   h_recv_fit;  //[n_migrate]
     float*   h_gbest_pos; //[D]
+    int      D;           //problem dimensionality
+    //device scratch — packed [dim*n_migrate + mi] to mirror the host layout
+    float*   d_send_pos;  //[n_migrate * D]
+    float*   d_recv_pos;  //[n_migrate * D]
+    float*   d_recv_fit;  //[n_migrate]
+    int*     d_idx;       //[n_migrate] — top (gather) or worst (scatter) slots
+    float*   d_gbest_pos; //[D]
 } IslandSyncData;
 
 /**
