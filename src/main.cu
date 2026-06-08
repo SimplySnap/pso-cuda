@@ -22,13 +22,14 @@
 #include "../pso/pso.h"
 
 struct CliArgs {
-    const char* evaluator;       // "rastrigin" | "levy" | "schaffer" etc
+    const char* evaluator;       // "rastrigin" | "levy" | "schaffer" | "tsp"
     int                n_particles;
     int                n_dims;
     int                max_iters;
     unsigned long long seed;
     const char*       csv_path;       // null = no CSV output
     const char*       history_path;   // null = don't dump gbest history
+    const char*       tsp_file;       // tsp: "x y" per line; null = random instance
 };
 
 // One bench result. Timing fields are loop-stage CUDA event timings from pso_run.
@@ -193,6 +194,10 @@ static double estimate_loop_flops(const PSOConfig& cfg, const char* evaluator) {
     double eval_ops_per_particle = 10.0 * D;
     if (std::strcmp(evaluator, "schaffer") == 0) {
         eval_ops_per_particle = 20.0;
+    } else if (std::strcmp(evaluator, "tsp") == 0) {
+        // Random-keys decode is an O(D^2) selection-sort argsort plus an O(D)
+        // tour-length sweep; the sort dominates.
+        eval_ops_per_particle = D * D;
     }
 
     const double eval_flops = N * eval_ops_per_particle;
@@ -203,13 +208,16 @@ static double estimate_loop_flops(const PSOConfig& cfg, const char* evaluator) {
 static void print_usage(const char* prog) {
     std::fprintf(stderr,
         "usage: %s [--evaluator NAME] [--N INT] [--D INT] [--iters INT] [--seed UINT64]\n"
-        "  evaluator: rastrigin (default) | levy | schaffer\n"
+        "  evaluator: rastrigin (default) | levy | schaffer | tsp\n"
         "  N        : swarm size           (default 1024)\n"
         "  D        : dimensions           (default 30)\n"
         "  iters    : max iterations       (default 100)\n"
         "  seed     : RNG seed             (default 42)\n"
         "  csv_path : path to output CSV file (default none, i.e. no benchmarking output)\n"
-        "  history  : write gbest-vs-iter history to this file (default: none)\n",
+        "  history  : write gbest-vs-iter history to this file (default: none)\n"
+        "  tsp_file : tsp only — instance file, one \"x y\" per line; D is set from it.\n"
+        "             If omitted, a random instance of D cities in [0,1]^2 is generated\n"
+        "             (reproducible from --seed). 'best_value' is the tour length.\n",
         prog);
 }
 
@@ -230,8 +238,93 @@ static EvaluatorFn resolve_evaluator(const char* name) {
         CUDA_CHECK(cudaMemcpyFromSymbol(&fn, d_levy_ptr, sizeof(fn)));
     } else if (std::strcmp(name, "schaffer") == 0) {
         CUDA_CHECK(cudaMemcpyFromSymbol(&fn, d_schaffer_ptr, sizeof(fn)));
+    } else if (std::strcmp(name, "tsp") == 0) {
+        CUDA_CHECK(cudaMemcpyFromSymbol(&fn, d_tsp_ptr, sizeof(fn)));
     }
     return fn;
+}
+
+// Load a TSP instance from a file of "x y" lines into the host xy buffer
+// ([x0,y0,x1,y1,...]). Returns the city count, or -1 on error. Stops at
+// MAX_TSP_CITIES (the constant-memory / argsort-buffer cap).
+static int tsp_load_file(const char* path, float* xy, int max_cities) {
+    FILE* f = std::fopen(path, "r");
+    if (!f) {
+        std::fprintf(stderr, "could not open tsp file %s\n", path);
+        return -1;
+    }
+    int n = 0;
+    float x, y;
+    while (n < max_cities && std::fscanf(f, "%f %f", &x, &y) == 2) {
+        xy[2 * n]     = x;
+        xy[2 * n + 1] = y;
+        ++n;
+    }
+    std::fclose(f);
+    if (n < 2) {
+        std::fprintf(stderr, "tsp file %s has fewer than 2 cities\n", path);
+        return -1;
+    }
+    return n;
+}
+
+// Fill xy with `n` reproducible random cities in the unit square, derived from
+// `seed` via a small splitmix64 stream (no global RNG state touched).
+static void tsp_random_instance(float* xy, int n, unsigned long long seed) {
+    unsigned long long s = seed ? seed : 0x9E3779B97F4A7C15ULL;
+    auto next_unit = [&]() -> float {
+        s += 0x9E3779B97F4A7C15ULL;
+        unsigned long long z = s;
+        z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+        z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+        z =  z ^ (z >> 31);
+        // top 24 bits -> [0,1)
+        return static_cast<float>(z >> 40) / static_cast<float>(1u << 24);
+    };
+    for (int i = 0; i < n; ++i) {
+        xy[2 * i]     = next_unit();
+        xy[2 * i + 1] = next_unit();
+    }
+}
+
+// Prepare the TSP instance for this run: load-or-generate cities, upload them to
+// constant memory, and set cfg->n_dims to the city count (D == #cities for the
+// random-keys encoding). Returns the city count, or -1 on error.
+static int setup_tsp_instance(const CliArgs& args, PSOConfig* cfg) {
+    float* xy = static_cast<float*>(std::malloc(sizeof(float) * 2 * MAX_TSP_CITIES));
+    if (!xy) { std::fprintf(stderr, "tsp: host alloc failed\n"); return -1; }
+
+    int n;
+    if (args.tsp_file) {
+        n = tsp_load_file(args.tsp_file, xy, MAX_TSP_CITIES);
+        if (n < 0) { std::free(xy); return -1; }
+        std::printf("tsp: loaded %d cities from %s\n", n, args.tsp_file);
+    } else {
+        n = args.n_dims;
+        if (n < 2 || n > MAX_TSP_CITIES) {
+            std::fprintf(stderr, "tsp: D=%d out of range (2..%d) for a random instance\n",
+                n, MAX_TSP_CITIES);
+            std::free(xy);
+            return -1;
+        }
+        tsp_random_instance(xy, n, args.seed);
+        std::printf("tsp: generated random instance of %d cities in [0,1]^2 (seed=%llu)\n",
+            n, (unsigned long long)args.seed);
+    }
+
+    cudaError_t err = tsp_upload_instance(xy, n);
+    std::free(xy);
+    if (err != cudaSuccess) {
+        std::fprintf(stderr, "tsp: upload failed: %s\n", cudaGetErrorString(err));
+        return -1;
+    }
+
+    // Random keys: only the order of keys matters, so the unit cube is a natural
+    // choice and keeps the velocity dynamics scaled to the key range.
+    cfg->n_dims   = n;
+    cfg->bound_lo = 0.0f;
+    cfg->bound_hi = 1.0f;
+    return n;
 }
 
 static bool parse_args(int argc, char** argv, CliArgs* out) {
@@ -253,6 +346,7 @@ static bool parse_args(int argc, char** argv, CliArgs* out) {
     out->seed        = 42ULL;
     out->csv_path     = nullptr;
     out->history_path = nullptr;
+    out->tsp_file     = nullptr;
 
     for (int i = 1; i < argc; ++i) {
         const char* a = argv[i];
@@ -285,6 +379,9 @@ static bool parse_args(int argc, char** argv, CliArgs* out) {
         } else if (std::strcmp(a, "--history") == 0) {
             const char* v = need_val(a); if (!v) return false;
             out->history_path = v;
+        } else if (std::strcmp(a, "--tsp_file") == 0) {
+            const char* v = need_val(a); if (!v) return false;
+            out->tsp_file = v;
         } else if (std::strcmp(a, "-h") == 0 || std::strcmp(a, "--help") == 0) {
             print_usage(argv[0]);
             std::exit(0);
@@ -423,6 +520,12 @@ int main(int argc, char** argv) {
     if (!evaluator) {
         std::fprintf(stderr, "unknown evaluator: %s\n", args.evaluator);
         return 1;
+    }
+
+    // TSP needs its instance uploaded to constant memory; this also pins
+    // cfg.n_dims = #cities and sets random-keys bounds [0,1].
+    if (std::strcmp(args.evaluator, "tsp") == 0) {
+        if (setup_tsp_instance(args, &cfg) < 0) return 1;
     }
 
     std::printf("running pso: evaluator=%s N=%d D=%d iters=%d seed=%llu\n",
