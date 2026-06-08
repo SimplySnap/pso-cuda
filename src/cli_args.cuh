@@ -4,6 +4,10 @@
 #include <cstdlib>
 #include <cstring>
 
+#include "cli_args.cuh"
+#include "bench.cuh"
+#include "tsp_setup.cuh"
+
 /**
  * @brief Parsed CLI arguments, shared across all PSO entry points.
  *        MPI mains use sync_interval, n_migrate, and n_islands;

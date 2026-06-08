@@ -1,6 +1,6 @@
-#include <cstdio>
-#include <cstdlib>
-#include <cstring>
+//#include <cstdio>
+//#include <cstdlib>
+//#include <cstring>
 #include <cuda_runtime.h>
 #include <mpi.h>
 
@@ -9,84 +9,10 @@
 #include "../evals/evals.cuh"
 #include "../mpi/mpi_island.h"
 
-struct CliArgs {
-    const char*        evaluator;
-    int                n_particles;
-    int                n_dims;
-    int                max_iters;
-    int                sync_interval;
-    int                n_migrate;
-    unsigned long long seed;
-    const char*        csv_path;
-    const char*        history_path;
-};
+#include "cli_args.cuh"
+#include "bench.cuh"
+#include "tsp_setup.cuh"
 
-static void print_usage(const char* prog) {
-    std::fprintf(stderr,
-        "usage: %s [--evaluator NAME] [--N INT] [--D INT] [--iters INT]\n"
-        "          [--sync INT] [--migrate INT] [--seed UINT64]\n"
-        "          [--csv_path PATH] [--history PATH]\n"
-        "  evaluator : rastrigin (default) | levy | schaffer\n"
-        "  N         : particles per island  (default 1024)\n"
-        "  D         : dimensions            (default 30)\n"
-        "  iters     : max iterations        (default 100)\n"
-        "  sync      : sync callback interval (default 10)\n"
-        "  migrate   : particles to migrate  (default 5)\n"
-        "  seed      : base RNG seed         (default 42)\n",
-        prog);
-}
-
-static bool parse_args(int argc, char** argv, CliArgs* out) {
-    /*
-    Parses argv into CliArgs. Returns false on missing value or bad int.
-
-    Args:
-        argc (int):      Argument count.
-        argv (char**):   Argument vector.
-        out  (CliArgs*): Output struct.
-
-    Returns:
-        bool: true on success.
-    */
-    out->evaluator     = "rastrigin";
-    out->n_particles   = 1024;
-    out->n_dims        = 30;
-    out->max_iters     = 100;
-    out->sync_interval = 10;
-    out->n_migrate     = 5;
-    out->seed          = 42ULL;
-    out->csv_path      = nullptr;
-    out->history_path  = nullptr;
-
-    for (int i = 1; i < argc; ++i) {
-        const char* a = argv[i];
-        auto need_val = [&](const char* flag) -> const char* {
-            if (i + 1 >= argc) {
-                std::fprintf(stderr, "%s: missing value\n", flag);
-                return nullptr;
-            }
-            return argv[++i];
-        };
-
-        if      (std::strcmp(a, "--evaluator") == 0) { const char* v = need_val(a); if (!v) return false; out->evaluator     = v; }
-        else if (std::strcmp(a, "--N")         == 0) { const char* v = need_val(a); if (!v) return false; out->n_particles   = std::atoi(v); }
-        else if (std::strcmp(a, "--D")         == 0) { const char* v = need_val(a); if (!v) return false; out->n_dims        = std::atoi(v); }
-        else if (std::strcmp(a, "--iters")     == 0) { const char* v = need_val(a); if (!v) return false; out->max_iters     = std::atoi(v); }
-        else if (std::strcmp(a, "--sync")      == 0) { const char* v = need_val(a); if (!v) return false; out->sync_interval = std::atoi(v); }
-        else if (std::strcmp(a, "--migrate")   == 0) { const char* v = need_val(a); if (!v) return false; out->n_migrate     = std::atoi(v); }
-        else if (std::strcmp(a, "--seed")      == 0) { const char* v = need_val(a); if (!v) return false; out->seed          = std::strtoull(v, nullptr, 10); }
-        else if (std::strcmp(a, "--csv_path")  == 0) { const char* v = need_val(a); if (!v) return false; out->csv_path      = v; }
-        else if (std::strcmp(a, "--history")   == 0) { const char* v = need_val(a); if (!v) return false; out->history_path  = v; }
-        else if (std::strcmp(a, "-h") == 0 || std::strcmp(a, "--help") == 0) { print_usage(argv[0]); std::exit(0); }
-        else { std::fprintf(stderr, "unknown arg: %s\n", a); return false; }
-    }
-
-    if (out->n_particles <= 0 || out->n_dims <= 0 || out->max_iters <= 0 || out->sync_interval <= 0) {
-        std::fprintf(stderr, "N, D, iters, sync must all be positive\n");
-        return false;
-    }
-    return true;
-}
 
 static EvaluatorFn resolve_evaluator(const char* name) {
     /*
@@ -102,6 +28,7 @@ static EvaluatorFn resolve_evaluator(const char* name) {
     if      (std::strcmp(name, "rastrigin") == 0) CUDA_CHECK(cudaMemcpyFromSymbol(&fn, d_rastrigin_ptr, sizeof(fn)));
     else if (std::strcmp(name, "levy")      == 0) CUDA_CHECK(cudaMemcpyFromSymbol(&fn, d_levy_ptr,      sizeof(fn)));
     else if (std::strcmp(name, "schaffer")  == 0) CUDA_CHECK(cudaMemcpyFromSymbol(&fn, d_schaffer_ptr,  sizeof(fn)));
+    else if (std::strcmp(name, "tsp") == 0) CUDA_CHECK(cudaMemcpyFromSymbol(&fn, d_tsp_ptr, sizeof(fn)));
     return fn;
 }
 
@@ -165,9 +92,6 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    IslandSyncData sync_data{};
-    island_sync_data_alloc(&sync_data, MPI_COMM_WORLD, args.n_migrate, args.n_dims);
-
     PSOConfig cfg = {
         .n_particles   = args.n_particles,
         .n_dims        = args.n_dims,
@@ -185,6 +109,16 @@ int main(int argc, char** argv) {
         .on_sync_data  = &sync_data,
     };
 
+    //setup TSP
+    if (std::strcmp(args.evaluator, "tsp") == 0) {
+        if (setup_tsp_instance(args.tsp_file, args.n_dims, args.seed, &cfg) < 0) {
+            MPI_Finalize(); return 1;
+        }
+    }
+
+    IslandSyncData sync_data{};
+    island_sync_data_alloc(&sync_data, MPI_COMM_WORLD, args.n_migrate, args.n_dims);
+
     PSOResult result = pso_run(&cfg, evaluator, n_ranks, (char*)"ring");
 
     //gather best_value from all ranks, rank 0 reports the global winner
@@ -200,17 +134,24 @@ int main(int argc, char** argv) {
         std::printf("sync_ms    = %.3f\n", result.sync_ms);
         std::printf("total_ms   = %.3f\n", result.total_ms);
 
+        //standardize csv out
         if (args.csv_path) {
-            FILE* f = std::fopen(args.csv_path, "a");
-            if (f) {
-                std::fprintf(f,
-                    "ring,%s,%d,%d,%d,%d,%llu,%.6f,%.6f,%.6f,%.6f,%.6f,%.8g\n",
-                    args.evaluator, n_ranks, args.n_particles, args.n_dims,
-                    args.max_iters, (unsigned long long)args.seed,
-                    result.eval_ms, result.reduce_ms, result.update_ms,
-                    result.sync_ms, result.total_ms, global_val);
-                std::fclose(f);
-            }
+            BenchRow row{};
+            row.impl             = "ring";   //or "fc" in main_fc.cu
+            row.evaluator        = args.evaluator;
+            row.n_particles      = cfg.n_particles;
+            row.n_dims           = cfg.n_dims;
+            row.max_iters        = cfg.max_iters;
+            row.seed             = args.seed;
+            row.eval_ms          = result.eval_ms;
+            row.reduce_ms        = result.reduce_ms;
+            row.update_ms        = result.update_ms;
+            row.sync_ms          = result.sync_ms;
+            row.total_ms         = result.total_ms;
+            row.final_gbest      = global_val;
+            row.achieved_bw_gbps = safe_rate(estimate_loop_bytes(cfg), result.total_ms);
+            row.achieved_gflops  = safe_rate(estimate_loop_flops(cfg, args.evaluator), result.total_ms);
+            append_bench_row(args.csv_path, row);
         }
     }
 
