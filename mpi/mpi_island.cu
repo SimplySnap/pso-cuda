@@ -135,25 +135,28 @@ void island_sync_data_free(IslandSyncData* data) {
     cudaFree(data->d_gbest_pos); data->d_gbest_pos = nullptr;
 }
 
-void island_gbest_exchange(IslandState* state, void* user_data) {
+static void island_gbest_exchange(IslandState* state, void* user_data,
+                                  bool force) {
     /**
-     * @brief Finds the globally best fitness across all islands and broadcasts
-     *        that island's gbest position to every rank.
+     * @brief Finds the globally best fitness across all islands and conditionally
+     *        adopts that island's gbest position on each rank.
      *
      * @param state     Device state snapshot for this island.
      * @param user_data IslandSyncData* cast from void*.
+     * @param force     If true, always overwrite local gbest (fc behaviour).
+     *                  If false, only overwrite when the global best strictly
+     *                  improves on this island's current gbest (ring behaviour).
      *
      * @returns void.
      *
      * @Structure
-     *   - copy d_gbest_val D->H
-     *   - MPI_Allreduce with MPI_FLOAT_INT / MPI_MINLOC -> {val, winning_rank}
-     *   - winning rank gathers gbest_pos from pbest_pos[D*N + gbest_idx] on device
+     *   - cudaMemcpy d_gbest_val -> local_val
+     *   - MPI_Allreduce MPI_MINLOC -> best_pair {val, winning_rank}
+     *   - winning rank gathers gbest pos D->H
      *   - MPI_Bcast position vector from winning_rank
-     *   - all ranks write new gbest into d_gbest_val, d_gbest_idx=-1 (position
-     *     is now injected directly — idx is stale across ranks so we invalidate it)
-     * 
-     * Known design choice: overwrites particle 0's pbest. Fine for large swarms
+     *   - always: write best_pair.val -> d_gbest_val (correct reporting on all ranks)
+     *   - gated on (force || best_pair.val < local_val):
+     *       scatter broadcast position into pbest_pos slot 0 and reset d_gbest_idx=0
      */
     IslandSyncData* d = (IslandSyncData*)user_data;
 
@@ -168,8 +171,7 @@ void island_gbest_exchange(IslandState* state, void* user_data) {
     MPI_Allreduce(&local_pair, &best_pair, 1, MPI_FLOAT_INT,
                   MPI_MINLOC, d->comm);
 
-    //winning rank gathers its gbest position on-device (one kernel over D),
-    //then a single D-float D->H copy — no whole-column transfers.
+    //winning rank gathers its gbest position on-device
     if (d->rank == best_pair.rank) {
         gather_gbest_kernel<<<grid_for(state->D, 256), 256>>>(
             state->d_pbest_pos, state->d_gbest_idx, d->d_gbest_pos,
@@ -179,25 +181,26 @@ void island_gbest_exchange(IslandState* state, void* user_data) {
             sizeof(float) * state->D, cudaMemcpyDeviceToHost));
     }
 
-    //broadcast winning position to all ranks
+    //broadcast winning position to all ranks (needed even if not adopted,
+    //so the bcast is always unconditional and all ranks stay in sync)
     MPI_Bcast(d->h_gbest_pos, state->D, MPI_FLOAT, best_pair.rank, d->comm);
 
-    //write new gbest val to device on all ranks
+    //always update d_gbest_val so final_gbest reporting is accurate on all ranks
     CUDA_CHECK(cudaMemcpy(state->d_gbest_val, &best_pair.val,
         sizeof(float), cudaMemcpyHostToDevice));
 
-    //gbest_idx is now meaningless across ranks — kernel_update reads
-    //pbest_pos[dim*N + *d_gbest_idx], so we inject the broadcast position
-    //into slot 0 of pbest_pos (one H->D of D floats + a kernel) and point
-    //d_gbest_idx there.
-    CUDA_CHECK(cudaMemcpy(d->d_gbest_pos, d->h_gbest_pos,
-        sizeof(float) * state->D, cudaMemcpyHostToDevice));
-    scatter_gbest_kernel<<<grid_for(state->D, 256), 256>>>(
-        state->d_pbest_pos, d->d_gbest_pos, state->N, state->D);
-    CUDA_CHECK(cudaGetLastError());
-    int zero = 0;
-    CUDA_CHECK(cudaMemcpy(state->d_gbest_idx, &zero,
-        sizeof(int), cudaMemcpyHostToDevice));
+    //only inject the foreign position attractor when force=true (fc) or when
+    //the global best is strictly better than this island's current best (ring)
+    if (force || best_pair.val < local_val) {
+        CUDA_CHECK(cudaMemcpy(d->d_gbest_pos, d->h_gbest_pos,
+            sizeof(float) * state->D, cudaMemcpyHostToDevice));
+        scatter_gbest_kernel<<<grid_for(state->D, 256), 256>>>(
+            state->d_pbest_pos, d->d_gbest_pos, state->N, state->D);
+        CUDA_CHECK(cudaGetLastError());
+        int zero = 0;
+        CUDA_CHECK(cudaMemcpy(state->d_gbest_idx, &zero,
+            sizeof(int), cudaMemcpyHostToDevice));
+    }
 }
 
 //helper: find indices of the n_migrate particles with lowest pbest_fit
@@ -288,7 +291,7 @@ void island_migrate_ring(IslandState* state, void* user_data) {
         state->d_pbest_fit, d->d_idx, d->d_recv_fit, m);
     CUDA_CHECK(cudaGetLastError());
 
-    island_gbest_exchange(state, user_data);
+    island_gbest_exchange(state, user_data,false);
 }
 
 void island_migrate_fc(IslandState* state, void* user_data) {
@@ -393,5 +396,5 @@ void island_migrate_fc(IslandState* state, void* user_data) {
         state->d_pbest_fit, d->d_idx, d->d_recv_fit, n_inject);
     CUDA_CHECK(cudaGetLastError());
 
-    island_gbest_exchange(state, user_data);
+    island_gbest_exchange(state, user_data,true);
 }

@@ -28,6 +28,9 @@ struct CliArgs {
     const char*        evaluator;
     int                n_particles;
     int                n_dims;
+    float w;
+    float c1;
+    float c2;
     int                max_iters;
     int                sync_interval;
     int                n_migrate;
@@ -80,6 +83,9 @@ static bool parse_args(int argc, char** argv, CliArgs* out) {
     out->evaluator     = "rastrigin";
     out->n_particles   = 1024;
     out->n_dims        = 30;
+    out->w  = 0.7f;
+    out->c1 = 1.5f;
+    out->c2 = 1.5f;
     out->max_iters     = 100;
     out->sync_interval = 10;
     out->n_migrate     = 5;
@@ -106,6 +112,9 @@ static bool parse_args(int argc, char** argv, CliArgs* out) {
         else if (std::strcmp(a, "--migrate")   == 0) { const char* v = need_val(a); if (!v) return false; out->n_migrate     = std::atoi(v); }
         else if (std::strcmp(a, "--seed")      == 0) { const char* v = need_val(a); if (!v) return false; out->seed          = std::strtoull(v, nullptr, 10); }
         else if (std::strcmp(a, "--csv_path")  == 0) { const char* v = need_val(a); if (!v) return false; out->csv_path      = v; }
+        else if (std::strcmp(a, "--w")  == 0) { const char* v = need_val(a); if (!v) return false; out->w  = std::atof(v); }
+        else if (std::strcmp(a, "--c1") == 0) { const char* v = need_val(a); if (!v) return false; out->c1 = std::atof(v); }
+        else if (std::strcmp(a, "--c2") == 0) { const char* v = need_val(a); if (!v) return false; out->c2 = std::atof(v); }
         else if (std::strcmp(a, "--history")   == 0) { const char* v = need_val(a); if (!v) return false; out->history_path  = v; }
         else if (std::strcmp(a, "--tsp_file")  == 0) { const char* v = need_val(a); if (!v) return false; out->tsp_file      = v; }
         else if (std::strcmp(a, "-h") == 0 || std::strcmp(a, "--help") == 0) { print_usage(argv[0]); std::exit(0); }

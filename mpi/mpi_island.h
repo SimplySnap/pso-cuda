@@ -96,7 +96,7 @@ void island_sync_data_free(IslandSyncData* data);
  *   - all ranks cudaMemcpy h_gbest_pos H->D into pbest_pos[D * N + gbest_idx]
  *     and update d_gbest_val / d_gbest_idx
  */
-void island_gbest_exchange(IslandState* state, void* user_data);
+//void island_gbest_exchange(IslandState* state, void* user_data);
 
 /**
  * @brief SyncCallback: ring-topology particle migration + gbest exchange.
