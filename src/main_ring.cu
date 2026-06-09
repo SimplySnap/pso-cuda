@@ -120,7 +120,7 @@ int main(int argc, char** argv) {
         }
     }
 
-    island_sync_data_alloc(&sync_data, MPI_COMM_WORLD, args.n_migrate, args.n_dims);
+    island_sync_data_alloc(&sync_data, MPI_COMM_WORLD, args.n_migrate, cfg.n_dims);
 
     PSOResult result = pso_run(&cfg, evaluator, n_ranks, (char*)"ring");
 

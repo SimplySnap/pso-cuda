@@ -116,6 +116,14 @@ static double safe_rate(double work, float total_ms) {
     return work / (static_cast<double>(total_ms) * 1.0e6);
 }
 
+// Simple analytical loop-traffic estimate for M3 tables, not an Nsight
+// hardware-counter measurement. These bytes are meant to explain the dominant
+// global-memory traffic in the timed iteration loop:
+//   - eval: read positions and write/update pbest_pos
+//   - reduce: read pbest values
+//   - update: read positions/velocities/pbest/gbest and write positions/velocities
+// This intentionally skips CUB internals, cache effects, exact branch-dependent
+// pbest writes, and cuRAND state traffic so the report formula stays readable.
 /**
  * @brief Analytical estimate of dominant global-memory traffic for the timed
  *        iteration loop. Intentionally skips CUB internals, cache effects,
