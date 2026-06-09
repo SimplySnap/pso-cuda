@@ -96,13 +96,14 @@ static void append_bench_row(const char* path, const BenchRow& r) {
     }
     if (need_header) std::fputs(kBenchCsvHeader, f);
 
-    std::fprintf(f,
-        "%s,%s,%d,%d,%d,%llu,%.2f,%.2f,%.2f,%.6f,%.6f,%.6f,%.6f,%.6f,%.8g,%.6f,%.6f\n",
-        r.impl, r.evaluator,
-        r.n_particles, r.n_dims, r.max_iters,
-        (unsigned long long)r.seed,
-        r.eval_ms, r.reduce_ms, r.update_ms, r.sync_ms, r.total_ms,
-        r.final_gbest, r.achieved_bw_gbps, r.achieved_gflops);
+std::fprintf(f,
+    "%s,%s,%d,%d,%d,%llu,%.2f,%.2f,%.2f,%.6f,%.6f,%.6f,%.6f,%.6f,%.8g,%.6f,%.6f\n",
+    r.impl, r.evaluator,
+    r.n_particles, r.n_dims, r.max_iters,
+    (unsigned long long)r.seed,
+    r.w, r.c1, r.c2,
+    r.eval_ms, r.reduce_ms, r.update_ms, r.sync_ms, r.total_ms,
+    r.final_gbest, r.achieved_bw_gbps, r.achieved_gflops);
 
     std::fclose(f);
 }
