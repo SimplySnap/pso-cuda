@@ -32,6 +32,9 @@ struct BenchRow {
     int                n_dims;
     int                max_iters;
     unsigned long long seed;
+    float w;
+    float c1;
+    float c2;
     float              eval_ms;
     float              reduce_ms;
     float              update_ms;
@@ -43,7 +46,8 @@ struct BenchRow {
 };
 
 static const char* kBenchCsvHeader =
-    "impl,evaluator,N,D,iters,seed,eval_ms,reduce_ms,update_ms,sync_ms,"
+    "impl,evaluator,N,D,iters,seed,w,c1,c2,"
+    "eval_ms,reduce_ms,update_ms,sync_ms,"
     "total_ms,final_gbest,achieved_bw_gbps,achieved_gflops\n";
 
 /**
@@ -93,7 +97,7 @@ static void append_bench_row(const char* path, const BenchRow& r) {
     if (need_header) std::fputs(kBenchCsvHeader, f);
 
     std::fprintf(f,
-        "%s,%s,%d,%d,%d,%llu,%.6f,%.6f,%.6f,%.6f,%.6f,%.8g,%.6f,%.6f\n",
+        "%s,%s,%d,%d,%d,%llu,%.2f,%.2f,%.2f,%.6f,%.6f,%.6f,%.6f,%.6f,%.8g,%.6f,%.6f\n",
         r.impl, r.evaluator,
         r.n_particles, r.n_dims, r.max_iters,
         (unsigned long long)r.seed,

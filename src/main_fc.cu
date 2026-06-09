@@ -122,7 +122,7 @@ int main(int argc, char** argv) {
             MPI_Finalize(); return 1;
         }
     }
-    
+
     //print data for user
     if (rank == 0) {
         std::printf("pso_fc: %d islands, evaluator=%s N=%d D=%d iters=%d "
@@ -156,6 +156,9 @@ int main(int argc, char** argv) {
             row.n_dims           = cfg.n_dims;
             row.max_iters        = cfg.max_iters;
             row.seed             = args.seed;
+            row.w  = cfg.w;
+            row.c1 = cfg.c1;
+            row.c2 = cfg.c2;
             row.eval_ms          = result.eval_ms;
             row.reduce_ms        = result.reduce_ms;
             row.update_ms        = result.update_ms;
