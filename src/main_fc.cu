@@ -122,6 +122,15 @@ int main(int argc, char** argv) {
             MPI_Finalize(); return 1;
         }
     }
+    
+    //print data for user
+    if (rank == 0) {
+        std::printf("pso_fc: %d islands, evaluator=%s N=%d D=%d iters=%d "
+                    "sync_interval=%d migrate=%d seed=%llu\n",
+                    n_ranks, args.evaluator, args.n_particles, args.n_dims,
+                    args.max_iters, args.sync_interval, args.n_migrate,
+                    (unsigned long long)args.seed);
+    }
 
     island_sync_data_alloc(&sync_data, MPI_COMM_WORLD, args.n_migrate, cfg.n_dims);
 
